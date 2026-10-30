@@ -21,6 +21,16 @@ ZCode Proxy adalah program kecil yang jalan di komputermu sendiri. Paket coding 
 - 🔌 **Satu endpoint agregat MCP** - MCP plugin resmi ZCode (Tianyancha / Wind / iFinD Tonghuashun, dan lain-lain, total 134+ tool) digabung di balik **satu** endpoint `/mcp` (streamable HTTP, nama tool memakai namespace `{plugin}__{tool}` - jadi klien cukup dikonfigurasi ke satu MCP server saja; butuh login coding-plan, daftarnya dapat dilihat lewat `GET /mcp` di browser); halaman chat bawaan juga dapat dipasangi MCP server milikmu sendiri untuk dipakai model sebagai tool.
 - 🪟 **Lintas platform** - Windows / macOS / Linux jalan dari satu codebase yang sama, dapat juga dicompile jadi satu file executable atau di-deploy pakai Docker.
 
+## 🔀 Bedanya dengan versi asli
+
+Fork ini berbasis [TriDefender/zcode-api](https://github.com/TriDefender/zcode-api) tapi dipangkas untuk satu alur: clone, install, jalan.
+
+- **Tanpa aplikasi Android.** Seluruh kode mobile (folder Android-APP, subcommand `android`, build APK) dihapus. Control protocol yang dipakai panel web dipindah ke `src/server/control.ts` dan tetap jalan.
+- **Satu provider: Z.AI.** Pilihan bigmodel, login paste, dan auth-code flow dihapus. Login selalu lewat poll OAuth Z.AI.
+- **Sekali jalan langsung pakai.** `bun run start` saat belum login otomatis membuka login Z.AI dulu, lalu masuk TUI dan proxy ikut nyala sendiri.
+- **Ada kartu Connect Guide di TUI** (tombol <kbd>h</kbd>). Isinya base URL, API key, daftar model, dan contoh env untuk disambungkan ke tool lain.
+- **Dokumentasi Bahasa Indonesia.**
+
 ## 🚀 Mulai dalam satu menit
 
 ### Langkah 1: unduh exe terbaru dari [GitHub Releases](https://github.com/TriDefender/zcode-api/releases)
@@ -30,7 +40,7 @@ Iya, sudah itu saja. Memang sesederhana itu.
 Jalankan dari source juga sama gampangnya (saat pertama kali jalan, login Z.AI otomatis kebuka dulu, habis itu langsung masuk panel):
 
 ```bash
-git clone https://github.com/TriDefender/zcode-api.git && cd zcode-api
+git clone https://github.com/yayayapluto/zcode-api.git && cd zcode-api
 bun install
 bun run start
 ```
