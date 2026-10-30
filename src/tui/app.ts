@@ -17,7 +17,7 @@ import { updateConfigYaml, ensureConfigFile } from "../config/edit.js";
 import { AuthManager } from "../auth/manager.js";
 import { startServer, type ProxyServer } from "../server/server.js";
 import { buildServerOptions } from "../server/server-options.js";
-import { loadCredential, saveCredential, clearCredential } from "../auth/store.js";
+import { saveCredential, listAccounts, removeAccount, setActiveAccount } from "../auth/store.js";
 import { ZaiOAuthClient, type OAuthFlowClient, type OAuthFlowTokens } from "../auth/oauth.js";
 import { KeyResolver } from "../auth/resolver.js";
 import { openBrowser } from "../runtime/open-browser.js";
@@ -76,6 +76,8 @@ export async function runTui(args: ServeArgs): Promise<void> {
     loginInFlight: false,
     loginHint: "",
     showGuide: false,
+    accountId: "",
+    accountCount: 0,
     quota: null as QuotaState | null,
     toast: null as { text: string; kind: "ok" | "err" | "info" } | null,
   };
@@ -197,6 +199,8 @@ export async function runTui(args: ServeArgs): Promise<void> {
         guideBase: `http://${config.server.host}:${config.server.port}`,
         guideKeyHint: config.auth.proxyApiKey ? "your proxyApiKey" : "anything (e.g. sk-1234)",
         guideModels: config.models,
+        accountId: state.accountId,
+        accountCount: state.accountCount,
         logTotal: view.total,
         logView: view.lines,
         logFollowing: pane.following,
@@ -258,9 +262,12 @@ export async function runTui(args: ServeArgs): Promise<void> {
 
   // --- auth ----------------------------------------------------------------
   async function refreshAuth(): Promise<void> {
-    const cred = await loadCredential().catch(() => null);
+    const accounts = await listAccounts().catch(() => []);
+    const cred = accounts[0]?.credential ?? null;
     state.loggedIn = cred != null;
     state.apiKeyPreview = cred ? `${cred.apiKey.slice(0, 8)}…` : "";
+    state.accountId = accounts[0]?.id ?? "";
+    state.accountCount = accounts.length;
     // Logout hides the quota card (the billing calls need the JWT).
     if (!state.loggedIn) state.quota = null;
     else if (!state.quota) void refreshQuota();
@@ -327,13 +334,13 @@ export async function runTui(args: ServeArgs): Promise<void> {
     state.serverStatus = "starting";
     state.serverError = "";
     scheduleRender();
-    const cred = await loadCredential().catch(() => null);
+    await auth.reloadFromStore();
+    const cred = await auth.getCredential().catch(() => null);
     if (!cred) {
       state.serverStatus = "stopped";
       setToast("not logged in — press l to login", "err");
       return;
     }
-    auth.setOAuthCredential(cred);
     try {
       const s = await startServer(buildServerOptions(config, auth, args.debug));
       serverRef.current = s;
@@ -368,8 +375,9 @@ export async function runTui(args: ServeArgs): Promise<void> {
     else void startProxy();
   }
 
-  // Captcha warmup + claim scheduler start once per process, even across
-  // proxy stop/start cycles — the pools and scheduler are process-global.
+  // Captcha warmup + claim scheduler + account quota watcher start once per
+  // process, even across proxy stop/start cycles — the pools and scheduler
+  // are process-global.
   let backgroundJobsStarted = false;
   function startBackgroundJobsOnce(): void {
     if (backgroundJobsStarted) return;
@@ -387,6 +395,12 @@ export async function runTui(args: ServeArgs): Promise<void> {
         })
         .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
     }
+    import("../auth/account-quota.js")
+      .then((m) => {
+        m.startAccountQuotaWatcher(auth, config);
+        console.log("[accounts] quota watcher ON (multi-account failover)");
+      })
+      .catch((err) => console.error(`[accounts] quota watcher failed to start: ${(err as Error).message}`));
   }
 
   // --- plan switching (mirrors the shared setConfig command) ---
@@ -461,7 +475,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
       const cred = await resolver.resolveCodingPlanCredential(tokens.accessToken, tokens.userId);
       if (tokens.jwt) cred.jwt = tokens.jwt;
       await saveCredential(cred);
-      if (serverRef.current) auth.setOAuthCredential(cred);
+      await auth.reloadFromStore();
       console.log(`OAuth completed for zai`);
       setToast("logged in", "ok");
       // Hands-free run: a fresh login means the proxy should serve immediately.
@@ -494,8 +508,10 @@ export async function runTui(args: ServeArgs): Promise<void> {
       state.loginHint = "";
     }
     try {
-      clearCredential();
+      const accounts = await listAccounts().catch(() => []);
+      if (accounts[0]) await removeAccount(accounts[0].id);
     } catch { /* best-effort logout */ }
+    await auth.reloadFromStore();
     await refreshAuth();
     if (serverRef.current) setToast("logged out — restart the proxy to apply", "info");
     else setToast("logged out", "ok");
@@ -541,6 +557,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
           case "s": toggleProxy(); return;
           case "l": void startLogin(); return;
           case "o": void logout(); return;
+          case "a": void cycleAccount(); return;
           case "r": void refreshQuota(); return;
           case "u": void runUpdateCheck(true); return;
           case "h": state.showGuide = !state.showGuide; scheduleRender(); return;
@@ -560,6 +577,26 @@ export async function runTui(args: ServeArgs): Promise<void> {
       case "end": pane.followBottom(); scheduleRender(); return;
       default: return;
     }
+  }
+
+  /** Cycle the active account (multi-account failover order). */
+  async function cycleAccount(): Promise<void> {
+    const accounts = await listAccounts().catch(() => []);
+    if (accounts.length === 0) {
+      setToast("not logged in — press l to login", "info");
+      return;
+    }
+    if (accounts.length < 2) {
+      setToast(`only one account logged in (${accounts[0]!.id})`, "info");
+      return;
+    }
+    const ids = accounts.map((a) => a.id);
+    const cur = auth.currentAccountId() ?? ids[0]!;
+    const next = ids[(ids.indexOf(cur) + 1) % ids.length]!;
+    await setActiveAccount(next);
+    await auth.reloadFromStore();
+    await refreshAuth();
+    setToast(`active account: ${next}`, "ok");
   }
 
   /** Mouse clicks hit the same actions as their keyboard shortcuts. */

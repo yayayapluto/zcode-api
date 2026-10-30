@@ -242,6 +242,9 @@ Daftar ini cuma untuk pajangan:
 
 ## ❓ Pertanyaan umum
 
+**Kuota satu akun habis di tengah jalan, gimana?**
+Login saja akun kedua (ketiga, dst): `bun run src/index.ts auth login zai` bisa diulang untuk akun berbeda. Kalau satu akun kehabisan kuota, proxy otomatis meneruskan request ke akun berikutnya yang masih ada kuotanya — tanpa jeda, tanpa setting. Cek daftar akun: `auth status`. Pindah manual akun aktif: `auth switch <id|n>` atau tombol `a` di TUI. Keluar dari satu akun: `auth logout [id]` (tanpa argumen = akun aktif).
+
 **Start langsung keluar, pesannya Not logged in?**
 Login dulu: `bun run src/index.ts auth login zai`. Sekali login cukup, kredensialnya disimpan terenkripsi.
 

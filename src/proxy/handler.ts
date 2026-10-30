@@ -29,7 +29,9 @@ import {
   type HighspeedCard,
   type HighspeedManager,
 } from "../highspeed/manager.js";
-import { credentialString } from "../auth/types.js";
+import { credentialString, type Credential } from "../auth/types.js";
+import { accountIdFor } from "../auth/store.js";
+import { isExhaustionResponse, exhaustionCooldownMs } from "./account-failover.js";
 import { sendOrderedUpstreamRequest, orderedAdvertisedCodings } from "./ordered-transport.js";
 import { transformRequestBody } from "./body-transformer.js";
 import { isCaptchaChallenged, retryOnCaptchaChallenge, resolveCaptchaAcquireBudgetMs, acquireCaptchaWithRetry, type CaptchaModuleLike } from "./captcha-retry.js";
@@ -134,7 +136,7 @@ export async function proxyRequest(
     openaiBaseURL: config.providers[config.provider].openaiBase,
   };
 
-  let cred;
+  let cred: Credential;
   try {
     cred = await auth.getCredential();
   } catch (err) {
@@ -281,11 +283,11 @@ export async function proxyRequest(
   if (useOrderedTransport && translateMode) {
     upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
   }
-  const dispatch = async (req: Request, pairs: UpstreamHeaderPair[]): Promise<Response> => {
+  const dispatch = async (req: Request, pairs: UpstreamHeaderPair[], attemptCred: Credential = cred): Promise<Response> => {
     let sendUrl = req.url;
     let routingHeaderPairs: UpstreamHeaderPair[] | undefined;
     if (routing) {
-      const routed = await routing.resolve(req.url, credentialString(cred), cred.jwt);
+      const routed = await routing.resolve(req.url, credentialString(attemptCred), attemptCred.jwt);
       if (routed.routed) {
         sendUrl = routed.url;
         routingHeaderPairs = routed.headers ? (Object.entries(routed.headers) as UpstreamHeaderPair[]) : undefined;
@@ -298,9 +300,9 @@ export async function proxyRequest(
     return sendWithClientSigning(signer, {
       url: req.url,
       headerPairs: pairs,
-      credential: credentialString(cred),
-      oauthAccessToken: cred.oauthAccessToken,
-      provider: cred.provider,
+      credential: credentialString(attemptCred),
+      oauthAccessToken: attemptCred.oauthAccessToken,
+      provider: attemptCred.provider,
       appVersion: config.identity.appVersion,
       debug: debug ? (message) => debugLine(reqId, message) : undefined,
       send: (finalPairs) => {
@@ -481,6 +483,46 @@ export async function proxyRequest(
     if (!outcome.ok) return outcome.resp;
     upstreamResp = outcome.resp;
   }
+
+  // Multi-account failover: the active account's quota ran out — mark it
+  // exhausted and retry the same request on the next logged-in account,
+  // before anything streams to the client. Mirrors the highspeed/captcha
+  // retry seams above; failover attempts go uncarded (the card was drawn
+  // against the previous account).
+  let failoverCred = cred;
+  const failoverSeen = new Set<string>([accountIdFor(cred)]);
+  while (await isExhaustionResponse(upstreamResp)) {
+    const failedId = accountIdFor(failoverCred);
+    failoverSeen.add(failedId);
+    auth.markExhausted(failedId, Date.now() + exhaustionCooldownMs(upstreamResp.status));
+    const nextId = auth.nextAccountId(failedId);
+    const nextCred = nextId ? auth.credentialFor(nextId) : undefined;
+    if (!nextId || !nextCred || nextId === failedId || failoverSeen.has(nextId)) {
+      console.log(`${reqId} account quota exhausted — no other account available`);
+      break;
+    }
+    console.log(`${reqId} account quota exhausted — failing over to next account`);
+    if (highspeedCard) {
+      highspeedManager?.dropCard("account_failover");
+      highspeedCard = undefined;
+      highspeedAuth = undefined;
+      if (highspeedOrigBody !== undefined) transformedBody = highspeedOrigBody;
+    }
+    signer = opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(config);
+    failoverCred = nextCred;
+    upstreamHeaderPairs = buildUpstreamHeaderPairs(clientReq, upstreamFormat, failoverCred, config.identity, config.plan, captchaHeaders, clientSession);
+    if (useOrderedTransport && translateMode) upstreamHeaderPairs = capOrderedAcceptEncoding(upstreamHeaderPairs);
+    upstreamReq = buildUpstreamRequest(clientReq, upstreamFormat, provider, failoverCred, transformedBody, config.identity, config.plan, captchaHeaders, clientSession);
+    try {
+      upstreamResp = await dispatch(upstreamReq, upstreamHeaderPairs, failoverCred);
+    } catch (err) {
+      if (debug) debugError(reqId, "upstream_unreachable", (err as Error).message);
+      printRow(reqId, format, meta, 502, started, Date.now(), 0, 0, 0);
+      return errorResponse(502, "upstream_unreachable", (err as Error).message);
+    }
+    if (debug) debugLine(reqId, `← failover ${upstreamResp.status} ${upstreamResp.statusText}`);
+  }
+  cred = failoverCred;
 
   const isSSE = upstreamResp.headers.get("content-type")?.includes("text/event-stream") ?? false;
 

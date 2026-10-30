@@ -2,7 +2,7 @@
  * Tests for encrypted credential store.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { saveCredential, loadCredential, clearCredential, getStorePath } from "./store.js";
+import { saveCredential, loadCredential, clearCredential, getStorePath, saveAccount, listAccounts, setActiveAccount, removeAccount, accountIdFor } from "./store.js";
 import { writeFileSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,5 +150,74 @@ describe("credential store — SHA-256 KDF migration (R2-13)", () => {
     writeFileSync(getStorePath(), JSON.stringify({ encrypted: foreign }), "utf-8");
     const loaded = await loadCredential();
     expect(loaded).toBeNull();
+  });
+});
+
+describe("multi-account pool", () => {
+  let storeDir: string;
+  beforeEach(() => {
+    storeDir = useTempStore();
+  });
+
+  afterEach(() => {
+    dropTempStore(storeDir);
+  });
+
+  const credA = (userId = "user-a"): Credential => ({ apiKey: "a-key", provider: "zai", userId });
+  const credB = (userId = "user-b"): Credential => ({ apiKey: "b-key", provider: "zai", userId });
+
+  it("saveAccount adds accounts; newcomer becomes active", async () => {
+    const idA = await saveAccount(credA());
+    const idB = await saveAccount(credB());
+    expect(idA).toBe("user:user-a");
+    expect(idB).toBe("user:user-b");
+    const accounts = await listAccounts();
+    expect(accounts.map((a) => a.id)).toEqual([idB, idA]);
+    expect((await loadCredential())?.apiKey).toBe("b-key");
+  });
+
+  it("re-saving an existing account refreshes in place without duplicating", async () => {
+    await saveAccount(credA());
+    await saveAccount(credB());
+    await saveAccount({ ...credA(), secret: "new-secret" });
+    const accounts = await listAccounts();
+    expect(accounts).toHaveLength(2);
+    expect(accounts.find((a) => a.id === "user:user-a")?.credential.secret).toBe("new-secret");
+  });
+
+  it("setActiveAccount switches the loaded credential", async () => {
+    const idA = await saveAccount(credA());
+    await saveAccount(credB());
+    await setActiveAccount(idA);
+    expect((await loadCredential())?.apiKey).toBe("a-key");
+    await expect(setActiveAccount("user:nope")).rejects.toThrow(/unknown account/);
+  });
+
+  it("removeAccount drops one; clearing the last empties the store", async () => {
+    const idA = await saveAccount(credA());
+    const idB = await saveAccount(credB());
+    await removeAccount(idB);
+    expect((await listAccounts()).map((a) => a.id)).toEqual([idA]);
+    expect((await loadCredential())?.apiKey).toBe("a-key");
+    await removeAccount(idA);
+    expect(await listAccounts()).toEqual([]);
+    expect(await loadCredential()).toBeNull();
+  });
+
+  it("migrates a v1 single-credential file into the pool", async () => {
+    // Genuine v1 shape: bare encrypted credential, no pool envelope.
+    const bare = await legacyEncrypt(JSON.stringify(credA()));
+    writeFileSync(getStorePath(), JSON.stringify({ encrypted: bare }), "utf-8");
+    const accounts = await listAccounts();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]!.id).toBe("user:user-a");
+    expect((await loadCredential())?.apiKey).toBe("a-key");
+    // And the file was normalized to v2 on the way through.
+    const again = await listAccounts();
+    expect(again.map((a) => a.id)).toEqual(["user:user-a"]);
+  });
+
+  it("accountIdFor falls back to key prefix without userId", () => {
+    expect(accountIdFor({ apiKey: "abcdefghijklmnop", provider: "zai" })).toBe("key:abcdefghijkl");
   });
 });

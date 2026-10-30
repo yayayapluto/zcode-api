@@ -116,50 +116,157 @@ async function encrypt(plaintext: string): Promise<string> {
   return encryptWith(getEncryptionKey(), plaintext);
 }
 
-export async function saveCredential(cred: Credential): Promise<void> {
-  mkdirSync(dirname(storeFile()), { recursive: true });
-  const json = JSON.stringify(cred);
-  const encrypted = await encrypt(json);
-  atomicWriteStore(JSON.stringify({ encrypted }));
+/** One login slot in the multi-account pool. */
+export interface StoredAccount {
+  /** Stable id: OAuth userId when known, else `key:<apiKey-prefix>`. */
+  id: string;
+  /** Epoch ms when the account was added. */
+  addedAt: number;
+  credential: Credential;
 }
 
-export async function loadCredential(): Promise<Credential | null> {
-  if (!existsSync(storeFile())) return null;
-  const raw = readFileSync(storeFile(), "utf-8");
-  const parsed = JSON.parse(raw);
-  if (!parsed.encrypted) return null;
+/** On-disk store shape (v2). v1 files hold a bare credential and migrate on load. */
+interface CredentialStoreFile {
+  version: 2;
+  /** Account id serving traffic; null when the pool is empty. */
+  activeId: string | null;
+  accounts: StoredAccount[];
+}
 
-  let json: string;
+/** Derive a stable account id from a credential. */
+export function accountIdFor(cred: Credential): string {
+  if (cred.userId) return `user:${cred.userId}`;
+  return `key:${cred.apiKey.slice(0, 12)}`;
+}
+
+function readStoreFile(): { encrypted?: string } | null {
+  if (!existsSync(storeFile())) return null;
   try {
-    json = await decryptWith(getEncryptionKey(), parsed.encrypted);
+    return JSON.parse(readFileSync(storeFile(), "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+async function decryptStore(parsed: { encrypted?: string }): Promise<string | null> {
+  if (!parsed.encrypted) return null;
+  try {
+    return await decryptWith(getEncryptionKey(), parsed.encrypted);
   } catch {
     // Not decryptable under the new SHA-256 KDF — try the legacy XOR-fold key
     // (one-shot migration), then transparently re-store under the new format.
     try {
-      json = await decryptWith(getLegacyEncryptionKey(), parsed.encrypted);
+      return await decryptWith(getLegacyEncryptionKey(), parsed.encrypted);
     } catch (e) {
-      // Stale/corrupt credential file — key derivation is machine-specific
-      // ({homedir}-{platform}-{arch}), so cross-machine copies or OS reinstalls
-      // produce undecryptable ciphertext. Silently treat as "not logged in".
+      // Stale/corrupt credential file — silently treat as "not logged in".
       console.warn(`Ignoring corrupted or stale credentials at ${storeFile()}: ${(e as Error).message}`);
       return null;
     }
-    // Re-store under the new KDF. Best-effort by design: the credential is
-    // already decrypted in memory, so a failed re-write (read-only dir, AV
-    // lock on Windows, ...) must NOT fail this load — it retries next boot.
-    try {
-      atomicWriteStore(JSON.stringify({ encrypted: await encrypt(json) }));
-    } catch (e) {
-      console.warn(`Credential re-encryption under the new key derivation failed (will retry on next load): ${(e as Error).message}`);
-    }
   }
+}
 
+/** Parse the decrypted payload: v2 pool file, or a v1 bare credential (migrated). */
+function parseAccounts(json: string): StoredAccount[] {
+  const parsed = JSON.parse(json);
+  if (Array.isArray(parsed.accounts)) {
+    return parsed.accounts as StoredAccount[];
+  }
+  // v1 shape: the file holds a single credential object.
+  if (parsed && typeof parsed.apiKey === "string") {
+    const cred = parsed as Credential;
+    return [{ id: accountIdFor(cred), addedAt: 0, credential: cred }];
+  }
+  return [];
+}
+
+async function loadStoreFile(): Promise<CredentialStoreFile | null> {
+  const raw = readStoreFile();
+  if (!raw) return null;
+  const json = await decryptStore(raw);
+  if (json === null) return null;
+  let file: Partial<CredentialStoreFile>;
   try {
-    return JSON.parse(json) as Credential;
+    file = JSON.parse(json);
   } catch (e) {
     console.warn(`Ignoring corrupted credentials at ${storeFile()}: ${(e as Error).message}`);
     return null;
   }
+  const accounts = parseAccounts(json);
+  if (accounts.length === 0) return null;
+  const activeId = typeof file.activeId === "string" && accounts.some((a) => a.id === file.activeId)
+    ? file.activeId
+    : accounts[0]!.id;
+  // Best-effort re-store in v2 format (migration + normalization).
+  try {
+    atomicWriteStore(JSON.stringify({ encrypted: await encrypt(JSON.stringify({ version: 2, activeId, accounts } satisfies CredentialStoreFile)) }));
+  } catch (e) {
+    console.warn(`Credential re-encryption under the new key derivation failed (will retry on next load): ${(e as Error).message}`);
+  }
+  return { version: 2, activeId, accounts };
+}
+
+async function writeStoreFile(file: CredentialStoreFile): Promise<void> {
+  atomicWriteStore(JSON.stringify({ encrypted: await encrypt(JSON.stringify(file)) }));
+}
+
+export async function saveCredential(cred: Credential): Promise<void> {
+  await saveAccount(cred);
+}
+
+/** Add (or refresh) an account; the new account becomes active. Returns its id. */
+export async function saveAccount(cred: Credential): Promise<string> {
+  mkdirSync(dirname(storeFile()), { recursive: true });
+  const file = (await loadStoreFile()) ?? { version: 2 as const, activeId: null as string | null, accounts: [] as StoredAccount[] };
+  const id = accountIdFor(cred);
+  const existing = file.accounts.findIndex((a) => a.id === id);
+  const entry: StoredAccount = { id, addedAt: existing >= 0 ? file.accounts[existing]!.addedAt : Date.now(), credential: cred };
+  if (existing >= 0) file.accounts[existing] = entry;
+  else file.accounts.push(entry);
+  file.activeId = id;
+  await writeStoreFile(file);
+  return id;
+}
+
+/** Active account's credential, or null when logged out. Migrates v1 files. */
+export async function loadCredential(): Promise<Credential | null> {
+  const file = await loadStoreFile();
+  if (!file) return null;
+  return file.accounts.find((a) => a.id === file.activeId)?.credential ?? null;
+}
+
+/** All stored accounts (active first). */
+export async function listAccounts(): Promise<StoredAccount[]> {
+  const file = await loadStoreFile();
+  if (!file) return [];
+  const active = file.accounts.find((a) => a.id === file.activeId);
+  const rest = file.accounts.filter((a) => a.id !== file.activeId);
+  return active ? [active, ...rest] : rest;
+}
+
+/** Switch traffic to another stored account. */
+export async function setActiveAccount(id: string): Promise<void> {
+  const file = await loadStoreFile();
+  if (!file || !file.accounts.some((a) => a.id === id)) {
+    throw new Error(`unknown account "${id}" (run: zcode-proxy auth status)`);
+  }
+  file.activeId = id;
+  await writeStoreFile(file);
+}
+
+/** Remove one account; clears the whole store when the pool becomes empty. */
+export async function removeAccount(id: string): Promise<void> {
+  const file = await loadStoreFile();
+  if (!file) return;
+  const accounts = file.accounts.filter((a) => a.id !== id);
+  if (accounts.length === 0) {
+    clearCredential();
+    return;
+  }
+  await writeStoreFile({
+    version: 2,
+    activeId: file.activeId === id ? accounts[0]!.id : file.activeId,
+    accounts,
+  });
 }
 
 export function clearCredential(): void {

@@ -23,6 +23,8 @@ function baseState(overrides: Partial<FrameState> = {}): FrameState {
     guideBase: "http://127.0.0.1:8080",
     guideKeyHint: "anything (e.g. sk-1234)",
     guideModels: ["glm-5.3", "glm-5.3-flash"],
+    accountId: "",
+    accountCount: 1,
     logTotal: 0,
     logView: [],
     logFollowing: true,
@@ -145,6 +147,10 @@ describe("buildFrame", () => {
     expect(actions).toContainEqual({ kind: "key", key: "s" });
     expect(actions).toContainEqual({ kind: "key", key: "h" });
     expect(actions).toContainEqual({ kind: "key", key: "q" });
+    // [a] account sits behind [h] in the greedy footer, so it only registers
+    // on wider terminals (same tail-drop deal as [r]).
+    const wide = buildFrame(baseState({ width: 140 }));
+    expect(wide.regions.map((r) => r.action)).toContainEqual({ kind: "key", key: "a" });
   });
 
   test("provider row is static text with no click region", () => {
@@ -455,7 +461,7 @@ describe("buildFrame", () => {
     }));
     const actions = f.regions.map((r) => r.action);
     expect(actions).toContainEqual({ kind: "key", key: "r" });
-    // The footer drops its tail on 80 columns (like [p]/[t]/[c]); [r] shows
+    // The footer drops its tail on 80 columns (like [t]/[c]); [r] shows
     // only on wider terminals.
     const wide = buildFrame(baseState({
       width: 140,

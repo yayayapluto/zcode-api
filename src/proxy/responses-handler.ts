@@ -48,7 +48,9 @@ import {
   type HighspeedManager,
 } from "../highspeed/manager.js";
 import { buildAnthropicMetadataUserId } from "./trace-headers.js";
-import { credentialString } from "../auth/types.js";
+import { credentialString, type Credential } from "../auth/types.js";
+import { accountIdFor } from "../auth/store.js";
+import { isExhaustionResponse, exhaustionCooldownMs } from "./account-failover.js";
 import { translateRequestOpenAIToAnthropic, translateResponseAnthropicToOpenAI } from "../translator/openai-to-anthropic.js";
 import { anthropicSseToOpenaiSse, AnthropicStreamError } from "../translator/sse-translator.js";
 import type { AnthropicMessagesRequest, AnthropicMessagesResponse } from "../translator/types.js";
@@ -167,7 +169,7 @@ export async function handleResponses(
   const { chatRequest, customToolNames, namespaceMap, hasToolSearch } = translated;
 
   // ── 4. credential + provider ──
-  let cred;
+  let cred: Credential;
   try {
     cred = await opts.auth.getCredential();
   } catch (err) {
@@ -271,9 +273,9 @@ export async function handleResponses(
   const routing = opts.endpointRouting !== undefined ? opts.endpointRouting : getDefaultEndpointRouting(opts.config);
   // 官方 3.15.1 静态规则：highspeed mode 的推理请求永不签名（`TUs` 返回 false）。
   let signer = highspeedCard ? null : (opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(opts.config));
-  const dispatch = async (pairs: UpstreamHeaderPair[]): Promise<Response> => {
-    const routed = routing ? await routing.resolve(upstreamReq.url, credentialString(cred), cred.jwt) : null;
-    const sendUrl = routed?.routed ? routed.url : upstreamReq.url;
+  const dispatch = async (req: Request, pairs: UpstreamHeaderPair[], attemptCred: Credential = cred): Promise<Response> => {
+    const routed = routing ? await routing.resolve(req.url, credentialString(attemptCred), attemptCred.jwt) : null;
+    const sendUrl = routed?.routed ? routed.url : req.url;
     const routingHeaderPairs = routed?.headers
       ? (Object.entries(routed.headers) as UpstreamHeaderPair[])
       : undefined;
@@ -281,11 +283,11 @@ export async function handleResponses(
     // signing decisions run against the PRE-routing provider URL (mirrors the
     // client, whose signer wraps the routing transport)
     return sendWithClientSigning(signer, {
-      url: upstreamReq.url,
+      url: req.url,
       headerPairs: pairs,
-      credential: credentialString(cred),
-      oauthAccessToken: cred.oauthAccessToken,
-      provider: cred.provider,
+      credential: credentialString(attemptCred),
+      oauthAccessToken: attemptCred.oauthAccessToken,
+      provider: attemptCred.provider,
       appVersion: opts.config.identity.appVersion,
       debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
       send: (finalPairs) => {
@@ -308,7 +310,7 @@ export async function handleResponses(
     // Connect-retry ladder mirrors the chat hot path (handler.ts): 3 attempts,
     // fresh Request per dispatch (built inside `dispatch`), 500ms×attempt
     // backoff, no retry once the client aborted.
-    upstreamResp = await dispatchWithConnectRetry(() => dispatch(wireHeaders), {
+    upstreamResp = await dispatchWithConnectRetry(() => dispatch(upstreamReq, wireHeaders), {
       isAborted: () => clientReq.signal.aborted,
     });
   } catch (err) {
@@ -325,7 +327,7 @@ export async function handleResponses(
     signer = opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(opts.config);
     const retryPairs = highspeedOrigPairs;
     try {
-      upstreamResp = await dispatchWithConnectRetry(() => dispatch(retryPairs), {
+      upstreamResp = await dispatchWithConnectRetry(() => dispatch(upstreamReq, retryPairs), {
         isAborted: () => clientReq.signal.aborted,
       });
     } catch (err) {
@@ -347,6 +349,7 @@ export async function handleResponses(
         challengedResp: upstreamResp,
         debug: debug ? (message) => console.log(`[responses] ${message}`) : undefined,
         solveAndRetry: (retryHeaders) => dispatch(
+          upstreamReq,
           buildUpstreamHeaderPairs(clientReq, upstreamFormat, cred, opts.config.identity, opts.config.plan, retryHeaders, clientSession),
         ),
         mapError: (err, phase) =>
@@ -358,6 +361,43 @@ export async function handleResponses(
       upstreamResp = outcome.resp;
     }
   }
+
+  // Multi-account failover (mirrors handler.ts): the active account's quota
+  // ran out — mark it exhausted and retry on the next logged-in account,
+  // before anything is translated for the client. Failover attempts go
+  // uncarded (the card was drawn against the previous account).
+  let failoverCred = cred;
+  const failoverSeen = new Set<string>([accountIdFor(cred)]);
+  while (await isExhaustionResponse(upstreamResp)) {
+    const failedId = accountIdFor(failoverCred);
+    failoverSeen.add(failedId);
+    opts.auth.markExhausted(failedId, Date.now() + exhaustionCooldownMs(upstreamResp.status));
+    const nextId = opts.auth.nextAccountId(failedId);
+    const nextCred = nextId ? opts.auth.credentialFor(nextId) : undefined;
+    if (!nextId || !nextCred || nextId === failedId || failoverSeen.has(nextId)) {
+      console.log("[responses] account quota exhausted — no other account available");
+      break;
+    }
+    console.log("[responses] account quota exhausted — failing over to next account");
+    if (highspeedCard) {
+      highspeedManager?.dropCard("account_failover");
+      highspeedCard = undefined;
+      highspeedAuth = undefined;
+      if (highspeedOrigBody !== undefined) transformedBody = highspeedOrigBody;
+    }
+    signer = opts.clientSigning !== undefined ? opts.clientSigning : getDefaultClientSigning(opts.config);
+    failoverCred = nextCred;
+    wireHeaders = buildUpstreamHeaderPairs(clientReq, upstreamFormat, failoverCred, opts.config.identity, opts.config.plan, captchaHeaders, clientSession);
+    const failoverReq = buildUpstreamRequest(clientReq, upstreamFormat, providerDef, failoverCred, transformedBody, opts.config.identity, opts.config.plan, captchaHeaders, clientSession);
+    try {
+      upstreamResp = await dispatchWithConnectRetry(() => dispatch(failoverReq, wireHeaders, failoverCred), {
+        isAborted: () => clientReq.signal.aborted,
+      });
+    } catch (err) {
+      return errorResponse(502, "upstream_unreachable", (err as Error).message);
+    }
+  }
+  cred = failoverCred;
 
   if (!upstreamResp.ok) {
     const errText = await upstreamResp.text().catch(() => "");

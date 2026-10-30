@@ -108,6 +108,10 @@ export interface FrameState {
   guideKeyHint: string;
   /** Model ids listed in the guide. */
   guideModels: string[];
+  /** Active account id (multi-account pool). */
+  accountId: string;
+  /** Number of logged-in accounts. */
+  accountCount: number;
   logTotal: number;
   logView: ReadonlyArray<{ level: string; text: string }>;
   logFollowing: boolean;
@@ -418,7 +422,10 @@ export function buildFrame(s: FrameState): Frame {
   regions.push(...planRow.regions);
 
   const authSegs: Seg[] = s.loggedIn
-    ? [{ t: "● ", c: GREEN }, { t: `logged in · ${s.apiKeyPreview}` }]
+    ? [
+        { t: "● ", c: GREEN },
+        { t: `logged in · ${s.apiKeyPreview}${s.accountCount > 1 ? ` · ${s.accountId} (${s.accountCount})` : ""}` },
+      ]
     : [{ t: "○ not logged in", c: AMBER }];
   emit((composeRow(w, lines.length, "Auth", authSegs.map((g) => ({ t: g.t, c: g.c })))).line);
 
@@ -663,7 +670,7 @@ export function buildFrame(s: FrameState): Frame {
   // narrow terminals, so the primary actions must come first.
   const footerItems: Array<[string, string]> = [
     ["s", "start/stop"], ["l", "login"], ["o", "logout"], ["g", "follow"], ["q", "quit"],
-    ["h", "guide"], ["t", "plan"], ["r", "quota refresh"], ["u", "update"], ["c", "clear"],
+    ["h", "guide"], ["a", "account"], ["t", "plan"], ["r", "quota refresh"], ["u", "update"], ["c", "clear"],
   ];
   footerParts.push({ t: "↑↓ scroll", c: DIM });
   for (const [key, label] of footerItems) {

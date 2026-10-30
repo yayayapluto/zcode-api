@@ -10,7 +10,7 @@ import {
   type ControlState,
 } from "./server/control.js";
 import { collectQuotaSnapshot } from "./server/routes-quota.js";
-import { loadCredential, saveCredential, clearCredential, getStorePath } from "./auth/store.js";
+import { loadCredential, saveCredential, getStorePath, listAccounts, accountIdFor } from "./auth/store.js";
 import { ZaiOAuthClient, type OAuthResult } from "./auth/oauth.js";
 import { KeyResolver } from "./auth/resolver.js";
 import type { Credential } from "./auth/types.js";
@@ -252,20 +252,15 @@ async function startServePanel(
   // auto-claim serving the account that was just replaced (issue #58 review,
   // P2). Fingerprint the store and re-sync after every panel command: the
   // page polls `getLogs` every 2s, so a background login lands within one poll.
-  let authFingerprint = JSON.stringify((await loadCredential().catch(() => null)) ?? null);
+  let authFingerprint = JSON.stringify((await listAccounts().catch(() => [])) ?? []);
 
   async function syncAuthWithDisk(): Promise<void> {
-    const onDisk = await loadCredential().catch(() => null);
-    const fingerprint = JSON.stringify(onDisk ?? null);
+    const accounts = await listAccounts().catch(() => []);
+    const fingerprint = JSON.stringify(accounts);
     if (fingerprint === authFingerprint) return;
     authFingerprint = fingerprint;
-    if (onDisk) {
-      auth.setOAuthCredential(onDisk);
-      console.log("auth: switched to the account now on disk");
-    } else {
-      auth.clearOAuthCredential();
-      console.log("auth: credential cleared (logged out)");
-    }
+    await auth.reloadFromStore();
+    console.log("auth: pool re-synced with disk");
   }
 
   const controlState: ControlState = {
@@ -276,10 +271,10 @@ async function startServePanel(
 
   async function startProxy(): Promise<{ ok: true; port: number } | { ok: false; error: string }> {
     if (serverRef.current) return { ok: false, error: "already_running" };
-    const cred = await loadCredential().catch(() => null);
+    await auth.reloadFromStore();
+    const cred = await auth.getCredential().catch(() => null);
     if (!cred) return { ok: false, error: "not_logged_in" };
-    auth.setOAuthCredential(cred);
-    authFingerprint = JSON.stringify(cred);
+    authFingerprint = JSON.stringify(await listAccounts().catch(() => []));
     try {
       const s = await startServer(buildServerOptions(config, auth, false));
       serverRef.current = s;
@@ -394,12 +389,12 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   const panelLogBuffer = panelSettings ? installLogTee() : null;
 
   const auth = new AuthManager();
-  const cred = await loadCredential();
+  await auth.reloadFromStore();
+  const cred = await auth.getCredential().catch(() => null);
   if (!cred) {
     console.error("Not logged in. Run: zcode-proxy auth login " + config.provider);
     process.exit(1);
   }
-  auth.setOAuthCredential(cred);
 
   if (debug) printDebugBanner(config, path, cred);
 
@@ -413,6 +408,7 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   // them without the proxy handle being involved (issue #58 review, P2).
   let claimScheduler: { stop: () => void } | null = null;
   let captchaModule: { shutdownCaptcha: () => void } | null = null;
+  let quotaWatcher: { stop: () => void } | null = null;
 
   if (config.plan === "start-plan") {
     // Pre-solve the captcha token pool in the background so first requests
@@ -435,6 +431,16 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   console.log(`  provider: ${config.provider}`);
   console.log(`  plan: ${config.plan}`);
   console.log(`  models: ${config.models.length} available`);
+  import("./auth/account-quota.js")
+    .then(async (m) => {
+      // Seed exhaustion marks at boot so the first request already skips
+      // spent accounts; the watcher keeps re-checking on an interval.
+      await m.refreshAccountQuotas(auth, config);
+      const n = auth.accountIds().length;
+      quotaWatcher = m.startAccountQuotaWatcher(auth, config);
+      console.log(`  accounts: ${n} logged in (quota watcher ON)`);
+    })
+    .catch((err) => console.error(`[accounts] quota watcher failed to start: ${(err as Error).message}`));
   if (config.responses.enabled) console.log(`  /v1/responses: ON`);
   if (config.async.enabled) {
     console.log(config.plan === "coding-plan" ? `  /async/v1/*: ON` : `  /async/v1/*: OFF (requires plan "coding-plan")`);
@@ -484,6 +490,15 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
         /* pool never started */
       }
       captchaModule = null;
+    }
+    if (quotaWatcher) {
+      try {
+        quotaWatcher.stop();
+        cleared.push("quota watcher");
+      } catch {
+        /* watcher never started */
+      }
+      quotaWatcher = null;
     }
     try {
       shutdownAllHighspeed(); // heartbeats are unref'd but stopped explicitly on shutdown
@@ -553,11 +568,13 @@ function authCommand(args: string[]): void {
   if (sub === "login") {
     authLogin(args.slice(1));
   } else if (sub === "logout") {
-    authLogout();
+    authLogout(args.slice(1));
   } else if (sub === "status") {
     authStatus();
+  } else if (sub === "switch") {
+    authSwitch(args.slice(1));
   } else {
-    console.error("Usage: zcode-proxy auth <login|logout|status>");
+    console.error("Usage: zcode-proxy auth <login|logout [id]|status|switch <id|n>>");
     process.exit(1);
   }
 }
@@ -675,7 +692,10 @@ async function performZaiLogin(importMode: boolean): Promise<void> {
   }
 
   await saveCredential(cred);
+  const id = accountIdFor(cred);
+  const total = (await listAccounts().catch(() => [])).length;
   console.log(`\nLogged in as ${provider}.`);
+  console.log(`  Account: ${id} (${total} logged in)`);
   console.log(`  API Key: ${cred.apiKey.substring(0, 12)}...`);
   if (cred.userId) console.log(`  User ID: ${cred.userId}`);
   console.log(`  Stored:  ${getStorePath()}`);
@@ -730,24 +750,62 @@ export function ensureDeviceMidInConfig(path: string): string {
   return mid;
 }
 
-function authLogout(): void {
-  if (!existsSync(getStorePath())) {
+async function authLogout(args: string[]): Promise<void> {
+  const accounts = await listAccounts().catch(() => []);
+  if (accounts.length === 0) {
     console.log("Not logged in.");
     return;
   }
-  clearCredential();
-  console.log("Logged out. Credentials removed.");
+  const target = resolveAccountArg(args[0], accounts) ?? accounts[0]!;
+  const { removeAccount } = await import("./auth/store.js");
+  await removeAccount(target.id);
+  const rest = accounts.length - 1;
+  console.log(`Logged out ${target.id}.`);
+  console.log(rest > 0 ? `  ${rest} account(s) still logged in.` : "  No accounts left.");
+}
+
+/** Resolve `auth logout|switch` target: 1-based index, id, or id prefix. */
+function resolveAccountArg(
+  raw: string | undefined,
+  accounts: { id: string }[],
+): { id: string } | undefined {
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= 1 && n <= accounts.length) return accounts[n - 1];
+  const exact = accounts.find((a) => a.id === raw);
+  if (exact) return exact;
+  const prefixed = accounts.filter((a) => a.id.startsWith(raw));
+  return prefixed.length === 1 ? prefixed[0] : undefined;
+}
+
+async function authSwitch(args: string[]): Promise<void> {
+  const accounts = await listAccounts().catch(() => []);
+  if (accounts.length === 0) {
+    console.log("Not logged in.");
+    return;
+  }
+  const target = resolveAccountArg(args[0], accounts);
+  if (!target) {
+    console.error("Usage: zcode-proxy auth switch <id|n> (see: zcode-proxy auth status)");
+    process.exit(1);
+  }
+  const { setActiveAccount } = await import("./auth/store.js");
+  await setActiveAccount(target.id);
+  console.log(`Active account: ${target.id}`);
 }
 
 async function authStatus(): Promise<void> {
-  const cred = await loadCredential();
-  if (!cred) {
+  const accounts = await listAccounts().catch(() => []);
+  if (accounts.length === 0) {
     console.log("Not logged in.");
     console.log("Run: zcode-proxy auth login");
     return;
   }
-  console.log(`Logged in: ${cred.provider}`);
-  console.log(`  API Key: ${cred.apiKey.substring(0, 12)}...`);
+  console.log(`Logged in: ${accounts.length} account(s)${accounts.length > 1 ? " (failover order)" : ""}`);
+  for (const [i, a] of accounts.entries()) {
+    const mark = i === 0 ? "*" : " ";
+    console.log(`  ${mark} [${i + 1}] ${a.id} · API Key: ${a.credential.apiKey.substring(0, 12)}...`);
+  }
   console.log(`  Store:   ${getStorePath()}`);
 }
 
