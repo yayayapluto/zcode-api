@@ -2,8 +2,6 @@
 
 [中文版](README.md) | [英文版](README_EN.md)
 
-<img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy 图标" />
-
 # ZCode Proxy
 
 **把你的 GLM 编码套餐，接进所有 AI 编程工具。**
@@ -12,7 +10,7 @@
 本来只能在官方客户端里用，ZCode Proxy 在本机把它变成标准的 OpenAI / Anthropic 接口，
 于是 Claude Code、Codex、Silly Tavern ……都能直接用上你的套餐额度。
 
-[快速上手](#-一分钟上手) · [接入编码工具](#-把编码工具接上来) · [手机版](#-手机版-android) · [常见问题](#-常见问题)
+[快速上手](#-一分钟上手) · [接入编码工具](#-把编码工具接上来) · [常见问题](#-常见问题)
 
 </div>
 
@@ -21,8 +19,7 @@
 ## 它能帮你做什么
 
 - 🧩 **一个地址，三种格式** —— OpenAI、Anthropic、Responses（Codex 专用）接口都在本机 `127.0.0.1:8080` 上，工具认哪种就给它哪种。
-- 🖥️ **带图形面板** —— 终端启动就是一块可视化面板（也可纯后台运行），启动、登录、看日志点点就行，还能用手机管理。
-- 📱 **安卓 App** —— 手机上启动/停止代理、看实时日志、切换服务商，出门在外也好用。
+- 🖥️ **带图形面板** —— 终端启动就是一块可视化面板（也可纯后台运行），启动、登录、看日志点点就行。
 - 💬 **自带网页聊天** —— 打开 `/webui` 就是一个本地 ChatGPT 风格聊天页，随手测试模型。
 - 🌙 **闲时通道 & 套餐秒抢**（可选）—— 错峰时段的免费额度通道、限量体验套餐自动领取，都是内置功能。
 - 🔌 **套餐内 MCP 聚合端点** —— ZCode 官方插件 MCP（天眼查 / Wind / 同花顺 iFinD…，134+ 工具）聚合到**单一** `/mcp` 端点（streamable HTTP，工具名 `{plugin}__{tool}` 命名空间化——客户端只配一个 MCP server 即可，需 coding-plan 登录，浏览器 `GET /mcp` 查看目录）；自带网页聊天还能外挂你自己的 MCP 服务器给模型当工具用。
@@ -125,17 +122,6 @@ curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/jso
   "messages": [{"role": "user", "content": "你好！"}]
 }'
 ```
-
-## 📱 手机版 (Android)
-
-从 [GitHub Releases](https://github.com/TriDefender/zcode-api/releases) 下载最新的 `apk` 安装即可。
-App 与电脑版功能对应：一键启动代理、扫码级简单配置、实时日志、切换服务商与套餐、亮暗双主题。
-
-| 主页 | 日志 | 设置 | 暗色主题 |
-|:-:|:-:|:-:|:-:|
-| <img src="docs/images/android/home-light.png" width="210" alt="主页" /> | <img src="docs/images/android/logs.png" width="210" alt="日志" /> | <img src="docs/images/android/settings.png" width="210" alt="设置" /> | <img src="docs/images/android/home-dark.png" width="210" alt="暗色主题" /> |
-
-手机和电脑跑的是同一套核心：App 内置了完整的代理引擎，**手机本身就是一个独立的代理服务器**，局域网内的电脑也可以连手机上的代理地址一起用。
 
 <details>
 <summary><b>Docker 部署</b></summary>

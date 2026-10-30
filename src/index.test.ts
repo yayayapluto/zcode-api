@@ -1,12 +1,12 @@
 /**
  * Tests for the exported pure functions (`parseServeArgs`,
- * `applyAndroidIdentityDefaults`).
+ * `ensureDeviceMidInConfig`) and the upstream identity header mapping.
  */
 import { describe, it, expect, afterEach } from "bun:test";
 import { writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseServeArgs, applyAndroidIdentityDefaults, ensureDeviceMidInConfig } from "./index.js";
+import { parseServeArgs, ensureDeviceMidInConfig } from "./index.js";
 import { buildIdentityHeaders } from "./proxy/identity.js";
 
 const IDENTITY_ENV_KEYS = [
@@ -49,7 +49,7 @@ describe("parseServeArgs", () => {
   });
 });
 
-describe("applyAndroidIdentityDefaults", () => {
+describe("upstream identity headers", () => {
   afterEach(() => {
     for (const k of IDENTITY_ENV_KEYS) {
       if (savedEnv[k] === undefined) delete process.env[k];
@@ -63,27 +63,21 @@ describe("applyAndroidIdentityDefaults", () => {
     for (const k of IDENTITY_ENV_KEYS) delete process.env[k];
   }
 
-  it("injects a stable desktop-Linux profile when no overrides are set", () => {
-    snapshotEnv();
-    applyAndroidIdentityDefaults();
-    expect(process.env.ZCODE_IDENTITY_PLATFORM).toBe("linux");
-    expect(process.env.ZCODE_IDENTITY_ARCH).toBe("x64");
-    expect(process.env.ZCODE_IDENTITY_RELEASE).toBe("6.8.0-49-generic");
-  });
-
-  it("never clobbers explicit env overrides", () => {
+  it("honours explicit env overrides", () => {
     snapshotEnv();
     process.env.ZCODE_IDENTITY_PLATFORM = "linux";
     process.env.ZCODE_IDENTITY_ARCH = "arm64";
     process.env.ZCODE_IDENTITY_RELEASE = "6.1.0-26-amd64";
-    applyAndroidIdentityDefaults();
-    expect(process.env.ZCODE_IDENTITY_ARCH).toBe("arm64");
-    expect(process.env.ZCODE_IDENTITY_RELEASE).toBe("6.1.0-26-amd64");
+    const h = buildIdentityHeaders({ appVersion: "3.8.1", sourceTitle: "cli", refererOrigin: "https://zcode.z.ai" });
+    expect(h["X-Platform"]).toBe("linux-arm64");
+    expect(h["X-Os-Version"]).toBe("6.1.0-26-amd64");
   });
 
   it("produces headers free of any Android telltales", () => {
     snapshotEnv();
-    applyAndroidIdentityDefaults();
+    process.env.ZCODE_IDENTITY_PLATFORM = "linux";
+    process.env.ZCODE_IDENTITY_ARCH = "x64";
+    process.env.ZCODE_IDENTITY_RELEASE = "6.8.0-49-generic";
     const h = buildIdentityHeaders({ appVersion: "3.8.1", sourceTitle: "cli", refererOrigin: "https://zcode.z.ai" });
     const blob = JSON.stringify(h).toLowerCase();
     expect(h["X-Platform"]).toBe("linux-x64");

@@ -3,7 +3,7 @@
  *
  * Backend (ZCODE_CAPTCHA_BACKEND): "happy" (default) — the happy-dom solver
  * in src/proxy/captcha-happy.ts. Execution (one worker thread per solve, a
- * persistent warm pool on Android / in-process fallback where no entry is
+ * persistent warm pool / in-process fallback where no entry is
  * available — issue #54) lives in captcha-worker-dispatch.ts.
  */
 import { solveViaWorkerOrInProcess, stopCaptchaWorkers } from "./captcha-worker-dispatch.js";
@@ -21,7 +21,7 @@ export async function runCaptchaSolve(scene: string, region: string, prefix: str
 export function setCaptchaSolverConcurrency(_n: number): void {}
 
 /** Worker-per-solve terminates itself; the persistent warm pool
- *  (ZCODE_CAPTCHA_WARM_WORKERS, Android) is terminated here — called by the
+ *  (ZCODE_CAPTCHA_WARM_WORKERS) is terminated here — called by the
  *  stopCaptchaPool / shutdownCaptcha chain. */
 export function shutdownCaptchaSolver(): void {
   stopCaptchaWorkers();

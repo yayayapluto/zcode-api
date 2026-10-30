@@ -1,13 +1,13 @@
 /**
- * Node-only global-fetch normalization for the Android (Node.js bundle) build.
+ * Node-only global-fetch normalization for non-Bun runtimes.
  *
  * Node's global fetch (undici) enforces default client timeouts that Bun's
  * fetch does not: `headersTimeout` and `bodyTimeout` both default to 300000 ms
  * (undici `client.js`, verified 2026-08-16). A non-streaming LLM upstream sends
  * response headers only after the ENTIRE generation completes — deep-reasoning
- * requests legitimately exceed 300s. Those requests work on the Bun desktop
+ * requests legitimately exceed 300s. Those requests work on the Bun
  * build but die as `UND_ERR_HEADERS_TIMEOUT` → 502 `upstream_unreachable` on
- * the Node Android build. This module restores the project's intended
+ * plain Node. This module restores the project's intended
  * "no upstream timeout on LLM calls" invariant (root AGENTS.md anti-pattern
  * #7) by swapping the global dispatcher for an Agent with both timeouts
  * disabled.
@@ -15,9 +15,8 @@
  * The npm `undici` package shares the global-dispatcher registration symbol
  * with Node's built-in fetch, so `setGlobalDispatcher` from the package
  * configures the GLOBAL fetch (verified empirically: a 1 ms Agent aborts
- * global fetch with `UND_ERR_HEADERS_TIMEOUT`). esbuild bundles the dynamic
- * import into the Android `server.cjs`; on Bun this function is a no-op and
- * the import never executes.
+ * global fetch with `UND_ERR_HEADERS_TIMEOUT`). On Bun this function is a
+ * no-op and the import never executes.
  */
 
 let applied = false;

@@ -1,7 +1,6 @@
 /**
- * Update notice (issue #60) — the CLI/TUI counterpart of the Android app's
- * `UpdateChecker`. The Android rules are ported as-is so both ends agree on
- * what "newer" means:
+ * Update notice (issue #60) — compares the running version against the newest
+ * GitHub release tag:
  *
  *   - ask the GitHub releases API for the newest tag (`/releases/latest`
  *     already excludes prereleases),
@@ -15,8 +14,8 @@
  * carries an `AbortController` deadline that is `unref`ed, so a stalled
  * connection can neither hang a one-shot CLI nor keep a process alive.
  *
- * Container images are immutable, so "self-update" is not offered on either
- * platform; the notice names the pull command of the detected runtime (Docker,
+ * Container images are immutable, so "self-update" is not offered; the notice
+ * names the pull command of the detected runtime (Docker,
  * Podman) and falls back to a runtime-agnostic "pull and recreate" hint when
  * the container userland cannot be told apart. A real in-place updater would
  * additionally need checksums published in the release (the artifacts have none
@@ -29,14 +28,13 @@ export const LATEST_RELEASE_API = "https://api.github.com/repos/TriDefender/zcod
 /** Human-facing releases page, used for the "how to update" hint. */
 export const RELEASES_PAGE = "https://github.com/TriDefender/zcode-api/releases";
 /**
- * GitHub answers 403 to requests without a User-Agent — the Android checker
- * carries an explicit one for exactly this reason.
+ * GitHub answers 403 to requests without a User-Agent — carry an explicit one.
  */
 const USER_AGENT = "zcode-proxy-update-check";
 const REQUEST_TIMEOUT_MS = 10_000;
 /** `ZCODE_UPDATE_CHECK=off` disables the automatic startup check. */
 const UPDATE_CHECK_ENV = "ZCODE_UPDATE_CHECK";
-/** `ZCODE_UPDATE_SKIP=v4.7.6,v4.7.7` mutes specific tags (Android's skipped_tag). */
+/** `ZCODE_UPDATE_SKIP=v4.7.6,v4.7.7` mutes specific tags. */
 const UPDATE_SKIP_ENV = "ZCODE_UPDATE_SKIP";
 const DISABLED_VALUES = new Set(["0", "false", "off", "no", "disable", "disabled"]);
 
@@ -129,7 +127,7 @@ export function parseVersion(tag: string): [number, number, number] | null {
 }
 
 /**
- * Android's rule (`UpdateChecker.isNewer`): compare the three numeric segments
+ * Version comparison: compare the three numeric segments
  * in order. An unparsable tag is never "newer" — otherwise a single malformed
  * release would nag every user on every start.
  */
@@ -193,7 +191,7 @@ export function buildUpdateNotice(
  * Ask the releases API for the newest tag. Returns null for every failure mode
  * — DNS/TLS/proxy interference, timeout, non-2xx (rate limit, 404), truncated
  * or unexpected JSON — because the caller must never treat "cannot check" as an
- * error (the Android checker documents the same contract).
+ * error — "cannot check" is never an error by contract.
  */
 export async function fetchLatestRelease(opts: UpdateCheckOptions = {}): Promise<ReleaseInfo | null> {
   const fetchImpl = opts.fetchImpl ?? (fetch as unknown as FetchLike);

@@ -2,8 +2,6 @@
 
 [中文版](README.md) | [英文版](README_EN.md)
 
-<img src="Android-APP/design/assets/zcode-app-icon.png" width="88" alt="ZCode Proxy icon" />
-
 # ZCode Proxy
 
 **Plug your GLM coding plan into every AI coding tool.**
@@ -13,7 +11,7 @@ A small utility that runs on your own computer. Coding plans from Z.AI / Bigmode
 turns them into standard OpenAI / Anthropic APIs on your machine, so Claude Code,
 Codex, Silly Tavern … can all use your plan quota directly.
 
-[Quick Start](#-quick-start) · [Connect Your Tools](#-connect-your-coding-tools) · [Android App](#-mobile-android) · [FAQ](#-faq)
+[Quick Start](#-quick-start) · [Connect Your Tools](#-connect-your-coding-tools) · [FAQ](#-faq)
 
 </div>
 
@@ -22,8 +20,7 @@ Codex, Silly Tavern … can all use your plan quota directly.
 ## What You Get
 
 - 🧩 **One endpoint, three formats** — OpenAI, Anthropic and Responses (Codex-specific) APIs are all served on local `127.0.0.1:8080`; give each tool whichever format it speaks.
-- 🖥️ **Built-in dashboard** — launching in a terminal gives you a visual panel (headless mode also available); start the proxy, log in and watch logs with simple keypresses, even manageable from your phone.
-- 📱 **Android app** — start/stop the proxy, watch live logs and switch providers on your phone, handy when you're away.
+- 🖥️ **Built-in dashboard** — launching in a terminal gives you a visual panel (headless mode also available); start the proxy, log in and watch logs with simple keypresses.
 - 💬 **Web chat included** — open `/webui` for a local ChatGPT-style chat page to try out models.
 - 🌙 **Off-peak channel & plan grabber** (optional) — a free-quota channel for off-peak hours and automatic claiming of limited trial plans are both built in.
 - 🔌 **In-plan MCP aggregate endpoint** — official ZCode plugin MCPs (Tianyancha / Wind / iFinD…, 134+ tools) are merged behind a **single** `/mcp` endpoint (streamable HTTP, tools namespaced `{plugin}__{tool}` — clients configure just one MCP server; requires a coding-plan login, `GET /mcp` in a browser shows the catalogue); the built-in web chat can also attach your own MCP servers as tools for the model.
@@ -126,16 +123,6 @@ curl http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/jso
   "messages": [{"role": "user", "content": "Hello!"}]
 }'
 ```
-
-## 📱 Mobile (Android)
-
-Download the latest `apk` from [GitHub Releases](https://github.com/TriDefender/zcode-api/releases) and install it. The app mirrors the desktop features: one-tap proxy start, QR-simple configuration, live logs, provider & plan switching, and light/dark themes.
-
-| Home | Logs | Settings | Dark theme |
-|:-:|:-:|:-:|:-:|
-| <img src="docs/images/android/home-light.png" width="210" alt="Home" /> | <img src="docs/images/android/logs.png" width="210" alt="Logs" /> | <img src="docs/images/android/settings.png" width="210" alt="Settings" /> | <img src="docs/images/android/home-dark.png" width="210" alt="Dark theme" /> |
-
-The phone and desktop run the same core: the app embeds the full proxy engine, so **the phone itself is a standalone proxy server** — computers on the same LAN can also connect to the proxy address on your phone.
 
 <details>
 <summary><b>Docker Deployment</b></summary>

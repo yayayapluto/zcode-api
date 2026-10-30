@@ -90,9 +90,10 @@ interface ZcodeEnvelope {
 /**
  * Common lifecycle for both login flows: `start()` produces the authorize URL,
  * `complete()` blocks until the flow finishes (callback redirect or server
- * poll), `authorize()` chains them for the CLI. `src/android/control.ts`
- * drives `start()` + `complete()` so the authorize URL can be surfaced to the
- * app while completion continues in the background.
+ * poll), `authorize()` chains them for the CLI. The in-process control
+ * dispatcher (`src/server/control.ts`) drives `start()` + `complete()` so
+ * the authorize URL can be surfaced to the panel while completion continues
+ * in the background.
  */
 export abstract class OAuthFlowClient {
   constructor(
@@ -421,9 +422,9 @@ export class AuthCodeOAuthClient extends OAuthFlowClient {
    * Call `waitForCallback()` (or `authorize()`) afterwards, then `close()`.
    *
    * The bind port is `0` (OS-assigned random) unless the env var
-   * `ZCODE_OAUTH_CALLBACK_PORT` is set, in which case that exact port is used.
-   * The Android entry sets the env var so the Custom Tabs redirect URL is
-   * predictable across launches.
+   * `ZCODE_OAUTH_CALLBACK_PORT` is set, in which case that exact port is
+   * used (useful when the OAuth redirect URL must stay predictable across
+   * launches).
    */
   start(): Promise<OAuthFlowStart> {
     const state = randomBytes(32).toString("hex");

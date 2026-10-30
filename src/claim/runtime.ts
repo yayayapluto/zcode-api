@@ -43,8 +43,8 @@ function claimCaptchaRequired(config: ProxyConfig, resolveCredential: () => Prom
 
 export function startAutoClaim(config: ProxyConfig, auth: AuthManager): ClaimScheduler {
   const scheduler = new ClaimScheduler({
-    // AuthManager first (fresh), then the encrypted store — on Android the
-    // login can land in the store after boot while auth hasn't been reloaded.
+    // AuthManager first (fresh), then the encrypted store — a login can land
+    // in the store after boot while auth hasn't been reloaded yet.
     getJwt: async () => {
       try {
         const cred = await auth.getCredential();

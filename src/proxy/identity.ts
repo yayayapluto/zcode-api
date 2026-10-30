@@ -31,8 +31,7 @@
  * X-ZCode-App-Version entirely and falls the User-Agent back to
  * `ZCode/unknown`.
  *
- * Runtime values are read via env overrides (matching the existing
- * ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE pattern) so the Android entry can emit
+ * Runtime values are read via env overrides, so embedders can emit
  * desktop-Linux identity without changing this module:
  *   - ZCODE_IDENTITY_RELEASE_CHANNEL
  *   - ZCODE_IDENTITY_CLIENT_LANGUAGE   (default: Intl locale, e.g. "zh-CN")
@@ -109,8 +108,8 @@ interface ResolvedIdentityValues {
 
 /** Shared env/config resolution for both builders (values only — ordering differs per builder). */
 function resolveIdentityValues(id: ProxyIdentity): ResolvedIdentityValues {
-  // Env overrides (ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE) let the Android entry
-  // emit desktop-Linux identity headers without changing this module.
+  // Env overrides (ZCODE_IDENTITY_PLATFORM/ARCH/RELEASE) let operators
+  // emit a chosen platform identity in headers without changing this module.
   return {
     n: resolveAppVersion(id.appVersion),
     platform: normalizePrintableHeaderValue(process.env.ZCODE_IDENTITY_PLATFORM ?? process.platform),

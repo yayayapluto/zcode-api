@@ -9,20 +9,17 @@
  * state per solve, removing cross-solve races.
  *
  * Entry resolution, in priority order (see resolveWorkerEntryCandidates):
- *   1. ZCODE_CAPTCHA_WORKER env — absolute path, injected by the Android
- *      shell (NodeRunner extracts the APK asset next to server.cjs);
- *   2. captcha-worker-entry.cjs sibling of the running bundle (esbuild CJS
- *      keeps __dirname; Android assets land in the same directory);
+ *   1. ZCODE_CAPTCHA_WORKER env — absolute path to the worker entry;
+ *   2. captcha-worker-entry.cjs sibling of the running bundle;
  *   3. the build-time FILE ASSET (captcha-worker-asset.ts — `bun build
  *      --compile` cannot resolve `new Worker(new URL(...))` at runtime;
- *      exists only after scripts/build-fork-worker.ts runs; the esbuild
- *      Android bundle marks the asset module external).
+ *      exists only after scripts/build-fork-worker.ts runs).
  * When none resolves, deployments solve IN-PROCESS (the pre-worker behavior,
  * still bounded by CAPTCHA_SYNC_FETCH_TIMEOUT_MS / CAPTCHA_SOLVE_TIMEOUT_MS)
- * — EXCEPT under ZCODE_CAPTCHA_REQUIRE_WORKER=1 (Android strict mode):
+ * — EXCEPT under ZCODE_CAPTCHA_REQUIRE_WORKER=1 (strict mode):
  * worker unavailability is a hard solve failure, never a main-thread degrade.
  *
- * ZCODE_CAPTCHA_WARM_WORKERS>0 (Android: 3) switches dispatch from
+ * ZCODE_CAPTCHA_WARM_WORKERS>0 switches dispatch from
  * worker-per-solve to a persistent warm pool: workers are reused across
  * solves (happy-dom window reuse is bounded inside captcha-happy —
  * CAPTCHA_REUSE_MAX_SOLVES / _IDLE_MS, issue #50 discipline), overflow falls
@@ -52,7 +49,7 @@ let nextSolveId = 0;
 // Entry resolution (pure candidates + filesystem probe) & strict mode
 // ---------------------------------------------------------------------------
 
-/** Sibling filename probed next to the running bundle (Android assets). */
+/** Sibling filename probed next to the running bundle. */
 const WORKER_ENTRY_SIBLING = "captcha-worker-entry.cjs";
 
 /** ZCODE_CAPTCHA_REQUIRE_WORKER=1|true — never degrade to in-process solving. */
@@ -70,7 +67,7 @@ function bundleDir(): string | null {
 }
 
 export interface WorkerEntryLookup {
-  /** Explicit path (ZCODE_CAPTCHA_WORKER), injected by the Android shell. */
+  /** Explicit path (ZCODE_CAPTCHA_WORKER env). */
   envPath?: string;
   /** Directory of the running bundle; the entry ships as a sibling file. */
   bundleDir?: string | null;
@@ -227,7 +224,7 @@ async function solveInWorkerDegrading(
 }
 
 // ---------------------------------------------------------------------------
-// Warm worker pool (Android): persistent workers reused across solves
+// Warm worker pool: persistent workers reused across solves
 // ---------------------------------------------------------------------------
 
 /** ZCODE_CAPTCHA_WARM_WORKERS — 0 (default) keeps worker-per-solve. */
@@ -424,7 +421,7 @@ async function warmSolve(entryPath: string, req: { scene: string; region: string
 
 /**
  * Terminate all persistent warm workers and reset the keeper. Called by
- * shutdownCaptchaSolver (stopCaptchaPool chain — e.g. the Android `stopProxy`
+ * shutdownCaptchaSolver (stopCaptchaPool chain — e.g. the `stopProxy`
  * control command) so a stopped proxy holds no worker memory.
  */
 export function stopCaptchaWorkers(): void {

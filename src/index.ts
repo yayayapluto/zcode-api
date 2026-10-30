@@ -5,11 +5,10 @@ import { loadConfig } from "./config/loader.js";
 import { AuthManager } from "./auth/manager.js";
 import { startServer, type ProxyServer } from "./server/server.js";
 import {
-  startControlListener,
   createControlDispatcher,
   LogBuffer,
   type ControlState,
-} from "./android/control.js";
+} from "./server/control.js";
 import { collectQuotaSnapshot } from "./server/routes-quota.js";
 import { loadCredential, saveCredential, clearCredential, getStorePath } from "./auth/store.js";
 import { ZaiOAuthClient, BigmodelOAuthClient, BigmodelPollOAuthClient, LOGIN_TIMEOUT_MS, parsePastedCallbackUrl, type OAuthResult } from "./auth/oauth.js";
@@ -107,14 +106,6 @@ function dispatchCli(args: string[]): void {
     void claimCommand(args.slice(1));
   } else if (cmd === "quota") {
     void quotaCommand();
-  } else if (cmd === "android") {
-    // Explicit catch: an async startup failure (e.g. control port already
-    // bound by an orphaned process) must exit non-zero deterministically, not
-    // surface as an unhandled rejection.
-    runAndroid().catch((err: unknown) => {
-      process.stderr.write(`zcode-proxy: android entry failed: ${(err as Error).stack ?? String(err)}\n`);
-      process.exit(1);
-    });
   } else if (cmd === "tui") {
     // Kept for muscle memory under `--cli`: the default dispatch already
     // routes `tui` to the TUI, but `--cli tui` should not regress to an error.
@@ -157,7 +148,6 @@ Usage:
   zcode-proxy serve debug [config.yaml]
                                     Start with verbose per-request diagnostics
   zcode-proxy --cli                 Classic CLI mode (bare --cli = serve)
-  zcode-proxy android               Android entry: proxy + localhost control listener
   zcode-proxy auth login <provider> Login via OAuth (provider: zai | bigmodel)
   zcode-proxy auth login <provider> --import
                                     Import API key from ~/.zcode/v2/config.json
@@ -181,7 +171,8 @@ Examples:
 
 /**
  * Mirror console output into a ring buffer so the panel's Logs card has data.
- * Same tee the Android entry installs — the buffer is also what `getLogs` reads.
+ * The same tee is installed for every serve process — the buffer is also what
+ * `getLogs` reads.
  */
 function installLogTee(): LogBuffer {
   const buffer = new LogBuffer();
@@ -208,12 +199,12 @@ function isLoopbackPanelHost(host: string): boolean {
  * only way to see quota, read live logs or switch provider/plan on a headless
  * box without `docker exec`.
  *
- * Commands are dispatched in-process through `createControlDispatcher()` — the
- * same protocol the Android shell drives over `POST /control`, without opening a
+ * Commands are dispatched in-process through `createControlDispatcher()` —
+ * the shared control protocol, without opening a
  * second, unauthenticated loopback port. The panel token is therefore the only
  * way in.
  *
- * The proxy lifecycle hooks mirror `runAndroid` on purpose: `serve` starts the
+ * The proxy lifecycle hooks are created fresh here: `serve` starts the
  * proxy eagerly, so `serverRef` is pre-filled and the start/stop commands only
  * matter for restarts (including the `stop_proxy_first` rule before setConfig).
  *
@@ -322,7 +313,7 @@ async function startServePanel(
 
   /**
    * The panel's transport wrapper. Two panel-only responsibilities live here
-   * rather than in the shared control layer, so the Android protocol keeps its
+   * rather than in the shared control layer, so the shared protocol keeps its
    * existing semantics:
    *
    * - `shutdown` answers first and unwinds afterwards. Exiting inside the
@@ -516,155 +507,6 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   });
 }
 
-/**
- * Desktop-Linux identity defaults for the Android entry (anti-pattern #34).
- * Without these, the Node process on Android reports its true host values:
- * `X-Platform: linux-arm64` and `X-Os-Version: 6.1.xx-android14-…` — a kernel
- * string no real ZCode desktop emits. `identity.ts` reads these env vars per
- * request, so setting them once here retargets every upstream call. Values are
- * deliberately CONSTANT (Ubuntu 24.04 x64 profile — the largest desktop-Linux
- * population): kernel strings are shared by millions of real machines, and
- * stability is required by anti-pattern #13 (never randomize fingerprints).
- * Explicit env values (adb shell setprop / NodeRunner) still win — each is set
- * with `??`, not unconditionally.
- */
-export function applyAndroidIdentityDefaults(): void {
-  process.env.ZCODE_IDENTITY_PLATFORM = process.env.ZCODE_IDENTITY_PLATFORM ?? "linux";
-  process.env.ZCODE_IDENTITY_ARCH = process.env.ZCODE_IDENTITY_ARCH ?? "x64";
-  process.env.ZCODE_IDENTITY_RELEASE = process.env.ZCODE_IDENTITY_RELEASE ?? "6.8.0-49-generic";
-}
-
-/**
- * Android entry — starts the proxy plus a localhost control listener.
- * Caller (Kotlin shell) must set env: ZCODE_CONTROL_PORT (control listener),
- * ZCODE_OAUTH_CALLBACK_PORT (fixed OAuth callback port for WebView redirect).
- */
-async function runAndroid(): Promise<void> {
-  applyAndroidIdentityDefaults();
-  const path = process.env.ZCODE_PROXY_CONFIG ?? "config.yaml";
-  ensureConfigFile(path);
-  const config = loadConfig(path);
-
-  const logBuffer = new LogBuffer();
-  const origLog = console.log;
-  const origErr = console.error;
-  const origWarn = console.warn;
-  console.log = (...args: unknown[]) => { logBuffer.push(args.join(" ")); origLog(...args); };
-  console.error = (...args: unknown[]) => { logBuffer.push("[error] " + args.join(" ")); origErr(...args); };
-  console.warn = (...args: unknown[]) => { logBuffer.push("[warn] " + args.join(" ")); origWarn(...args); };
-
-  const auth = new AuthManager();
-
-  // Captcha module handle for the start-plan pool warmup (started in
-  // startProxy, stopped whenever the proxy stops) — mirrors serve()'s
-  // warmup. On Android this also brings up the persistent captcha workers
-  // (ZCODE_CAPTCHA_WARM_WORKERS, injected by NodeRunner).
-  let captchaModule: { shutdownCaptcha: () => void } | null = null;
-  const stopCaptchaPoolRuntime = (): void => {
-    try { captchaModule?.shutdownCaptcha(); } catch {}
-    captchaModule = null;
-  };
-
-  const serverRef: { current: ProxyServer | null } = { current: null };
-
-  async function startProxy(): Promise<{ ok: true; port: number } | { ok: false; error: string }> {
-    if (serverRef.current) return { ok: false, error: "already_running" };
-    const cred = await loadCredential().catch(() => null);
-    if (!cred) return { ok: false, error: "not_logged_in" };
-    auth.setOAuthCredential(cred);
-    try {
-      const s = await startServer(buildServerOptions(config, auth, false));
-      serverRef.current = s;
-      console.log(`zcode-proxy listening on http://${s.hostname}:${s.port}`);
-      if (config.plan === "start-plan") {
-        // Mirror serve(): size the pool, start background refill and prefill
-        // — previously Android never initialized the pool at all (every take
-        // hit an empty-pool race + one urgent refill). The prefill also warms
-        // the persistent captcha workers on this platform.
-        import("./proxy/captcha.js")
-          .then(async (m) => {
-            captchaModule = m;
-            await m.startCaptchaPool(config.identity.appVersion);
-          })
-          .catch((err) => console.error(`[captcha] pool warmup failed: ${(err as Error).message}`));
-      }
-      return { ok: true, port: s.port };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  }
-
-  async function stopProxy(): Promise<{ ok: true } | { ok: false; error: string }> {
-    const s = serverRef.current;
-    if (!s) return { ok: false, error: "not_running" };
-    try {
-      s.stop(false);
-      serverRef.current = null;
-      stopCaptchaPoolRuntime();
-      console.log("zcode-proxy stopped");
-      return { ok: true };
-    } catch (err) {
-      return { ok: false, error: (err as Error).message };
-    }
-  }
-
-  async function setConfig(changes: {
-    provider?: ProviderId;
-    plan?: "coding-plan" | "start-plan";
-  }): Promise<{ ok: true; provider: ProviderId; plan: "coding-plan" | "start-plan" } | { ok: false; error: string }> {
-    if (serverRef.current) return { ok: false, error: "stop_proxy_first" };
-    if (changes.provider) config.provider = changes.provider;
-    if (changes.plan) config.plan = changes.plan;
-    updateConfigYaml(path, { provider: config.provider, plan: config.plan });
-    console.log(`config updated: provider=${config.provider} plan=${config.plan}`);
-    return { ok: true, provider: config.provider, plan: config.plan };
-  }
-
-  console.log("control listener ready; proxy stopped — use startProxy command to start");
-
-  if (config.claim.enabled && config.claim.auto) {
-    import("./claim/runtime.js")
-      .then((m) => {
-        m.startAutoClaim(config, auth);
-        console.log(`[claim] auto ON (poll ${Math.round(config.claim.pollIntervalMs / 1000)}s; waits for login)`);
-      })
-      .catch((err) => console.error(`[claim] scheduler failed to start: ${(err as Error).message}`));
-  }
-
-  const controlPort = Number(process.env.ZCODE_CONTROL_PORT ?? 0) || 0;
-  const controlState: ControlState = {
-    provider: config.provider,
-    plan: config.plan,
-    proxyPort: serverRef.current?.port ?? 0,
-  };
-  const controlListener = await startControlListener({
-    port: controlPort,
-    state: controlState,
-    logBuffer,
-    onStartProxy: startProxy,
-    onStopProxy: stopProxy,
-    onSetConfig: setConfig,
-    onQuota: () => collectQuotaSnapshot(config),
-    onShutdown: async () => {
-      serverRef.current?.stop(true);
-      stopCaptchaPoolRuntime();
-    },
-  });
-
-  console.log(`control listener: 127.0.0.1:${controlPort}`);
-  console.log(`provider: ${config.provider}`);
-  console.log(`plan: ${config.plan}`);
-
-  process.on("SIGINT", () => {
-    stopCaptchaPoolRuntime();
-    void controlListener.close().then(() => serverRef.current?.stop(true));
-  });
-  process.on("SIGTERM", () => {
-    stopCaptchaPoolRuntime();
-    void controlListener.close().then(() => serverRef.current?.stop(true));
-  });
-}
-
 function printDebugBanner(config: ProxyConfig, path: string, cred: Credential | null): void {
   const credShape = cred
     ? `${cred.apiKey.slice(0, 6)}...${cred.apiKey.slice(-4)} (${cred.apiKey.length} chars)`
@@ -830,9 +672,8 @@ async function authLogin(args: string[]): Promise<void> {
 
 /**
  * Ensure config.yaml exists and carries a stable `identity.deviceMid`.
- * Creates the file from the bundled template when missing (desktop flow;
- * Android's mid comes from NodeRunner env injection instead and is never
- * written here). Returns the mid (existing or freshly generated).
+ * Creates the file from the bundled template when missing (desktop flow).
+ * Returns the mid (existing or freshly generated).
  */
 function ensureConfigWithDeviceMid(): string {
   const path = process.env.ZCODE_PROXY_CONFIG ?? "config.yaml";

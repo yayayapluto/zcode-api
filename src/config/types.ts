@@ -38,11 +38,10 @@ export interface ProxyIdentity {
   /**
    * Device identity for `X-Device-Mid` (mirrors ZCode's telemetry deviceMid:
    * a random UUIDv4 generated ONCE and reused forever — no hardware values).
-   * Empty/undefined omits the header. Desktop: persisted in config.yaml
-   * (`ensureDeviceMidInConfig`). Android: injected via the
-   * `ZCODE_IDENTITY_DEVICE_MID` env var (NodeRunner, app-private file) — env
-   * wins over YAML. Must stay stable per anti-pattern #13; never randomize
-   * per-request.
+   * Empty/undefined omits the header. Persisted in config.yaml
+   * (`ensureDeviceMidInConfig`); the `ZCODE_IDENTITY_DEVICE_MID` env var
+   * overrides YAML when set. Must stay stable per anti-pattern #13; never
+   * randomize per-request.
    */
   deviceMid?: string;
 }

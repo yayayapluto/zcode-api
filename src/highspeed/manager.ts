@@ -430,7 +430,7 @@ let defaultManagerKey = "";
 /**
  * Process-wide manager (single card slot, like the official host service).
  * Returns null when `highspeed.enabled` is false. Recreated when origin/models
- * change (Android `setConfig`) — the previous instance's loop is stopped.
+ * change (runtime `setConfig`) — the previous instance's loop is stopped.
  */
 export function getDefaultHighspeedManager(config: {
   highspeed: { enabled: boolean; origin: string; models: string[] };

@@ -2,8 +2,8 @@
  * Tests for `src/update/check.ts` — the CLI/TUI update notice (issue #60).
  *
  * Every case injects a mock transport: the suite never touches the network,
- * and the "silent failure" contract (which the Android checker documents, and
- * which is why this module deliberately has no throwing path) is what most of
+ * and the "silent failure" contract (this module deliberately has no throwing
+ * path) is what most of
  * these assertions are about.
  */
 import { describe, it, expect } from "bun:test";
