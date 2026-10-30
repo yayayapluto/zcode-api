@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildFrame, findRegion, type FrameState } from "./frame.js";
+import { buildFrame, type FrameState } from "./frame.js";
 import { displayWidth, stripAnsi } from "./width.js";
 
 function baseState(overrides: Partial<FrameState> = {}): FrameState {
@@ -19,6 +19,10 @@ function baseState(overrides: Partial<FrameState> = {}): FrameState {
     responsesEnabled: true,
     claimAuto: false,
     quota: null,
+    showGuide: false,
+    guideBase: "http://127.0.0.1:8080",
+    guideKeyHint: "anything (e.g. sk-1234)",
+    guideModels: ["glm-5.3", "glm-5.3-flash"],
     logTotal: 0,
     logView: [],
     logFollowing: true,
@@ -43,10 +47,10 @@ describe("buildFrame", () => {
     expect(text).toContain("Logs");
   });
 
-  test("shows provider/plan button state and auth status", () => {
+  test("shows fixed provider, plan buttons and auth status", () => {
     const text = plainLines(baseState({ loggedIn: true, apiKeyPreview: "ab12cd34…" })).join("\n");
-    expect(text).toContain(" zai ");
-    expect(text).toContain(" bigmodel ");
+    expect(text).toContain("zai (fixed)");
+    expect(text).not.toContain(" bigmodel ");
     expect(text).toContain(" coding-plan ");
     expect(text).toContain(" start-plan ");
     expect(text).toContain("logged in · ab12cd34…");
@@ -113,7 +117,7 @@ describe("buildFrame", () => {
     expect(text).toContain("● logging in…");
   });
 
-  test("provider switch is locked while the proxy runs", () => {
+  test("plan switch is locked while the proxy runs", () => {
     const text = plainLines(baseState({ serverStatus: "running" })).join("\n");
     expect(text).toContain("(stop to switch)");
   });
@@ -132,34 +136,30 @@ describe("buildFrame", () => {
     }
   });
 
-  test("registers click regions for provider/plan/login/server/footer buttons", () => {
+  test("registers click regions for plan/login/server/guide/footer buttons", () => {
     const { regions } = buildFrame(baseState());
     const actions = regions.map((r) => r.action);
-    expect(actions).toContainEqual({ kind: "provider", value: "zai" });
-    expect(actions).toContainEqual({ kind: "provider", value: "bigmodel" });
     expect(actions).toContainEqual({ kind: "plan", value: "coding-plan" });
     expect(actions).toContainEqual({ kind: "plan", value: "start-plan" });
     expect(actions).toContainEqual({ kind: "key", key: "l" });
     expect(actions).toContainEqual({ kind: "key", key: "s" });
+    expect(actions).toContainEqual({ kind: "key", key: "h" });
     expect(actions).toContainEqual({ kind: "key", key: "q" });
   });
 
-  test("findRegion hit-tests provider buttons on their row", () => {
+  test("provider row is static text with no click region", () => {
     const { text, regions } = buildFrame(baseState());
     const lines = text.split("\n").map((l) => stripAnsi(l.replace(/\x1b\[K$/, "")));
-    const providerRow = lines.findIndex((l) => l.includes(" zai "));
+    const providerRow = lines.findIndex((l) => l.includes("zai (fixed)"));
     expect(providerRow).toBeGreaterThan(0);
-    const colOfZai = lines[providerRow]!.indexOf(" zai ");
-    const colOfBigmodel = lines[providerRow]!.indexOf(" bigmodel ");
-    expect(findRegion(regions, providerRow, colOfZai + 2)).toEqual({ kind: "provider", value: "zai" });
-    expect(findRegion(regions, providerRow, colOfBigmodel + 2)).toEqual({ kind: "provider", value: "bigmodel" });
-    expect(findRegion(regions, providerRow, colOfBigmodel - 1)).toBeNull();
+    const onRow = regions.filter((r) => r.row === providerRow);
+    expect(onRow).toEqual([]);
   });
 
-  test("provider/plan buttons are locked (no regions) while the proxy runs", () => {
+  test("plan buttons are locked (no regions) while the proxy runs", () => {
     const { regions } = buildFrame(baseState({ serverStatus: "running" }));
-    const providerRegions = regions.filter((r) => r.action.kind === "provider");
-    expect(providerRegions).toEqual([]);
+    const planRegions = regions.filter((r) => r.action.kind === "plan");
+    expect(planRegions).toEqual([]);
   });
 
   test("logout is only clickable when logged in (card button, not footer)", () => {
@@ -181,24 +181,30 @@ describe("buildFrame", () => {
     expect(follow!.row).toBeGreaterThan(0);
   });
 
-  test("buttons keep their slots when the selection changes (no jumping)", () => {
-    // zai is always the first slot, bigmodel the second — regardless of which
-    // is selected (the user's mouse must not hit a different button twice).
-    for (const provider of ["zai", "bigmodel"] as const) {
-      const { text, regions } = buildFrame(baseState({ provider }));
-      const lines = text.split("\n").map((l) => stripAnsi(l.replace(/\x1b\[K$/, "")));
-      const row = lines.findIndex((l) => l.includes(" zai "));
-      expect(lines[row]!.indexOf(" zai ")).toBeLessThan(lines[row]!.indexOf(" bigmodel "));
-      const bigmodelCol = lines[row]!.indexOf(" bigmodel ");
-      expect(findRegion(regions, row, bigmodelCol + 2)).toEqual({ kind: "provider", value: "bigmodel" });
-      expect(findRegion(regions, row, lines[row]!.indexOf(" zai ") + 2)).toEqual({ kind: "provider", value: "zai" });
-    }
+  test("plan buttons keep their slots when the selection changes (no jumping)", () => {
+    // coding-plan is always the first slot, start-plan the second — regardless
+    // of which is selected (the user's mouse must not hit a different button twice).
     for (const plan of ["coding-plan", "start-plan"] as const) {
       const { text } = buildFrame(baseState({ plan }));
       const lines = text.split("\n").map((l) => stripAnsi(l.replace(/\x1b\[K$/, "")));
       const row = lines.findIndex((l) => l.includes(" coding-plan "));
       expect(lines[row]!.indexOf(" coding-plan ")).toBeLessThan(lines[row]!.indexOf(" start-plan "));
     }
+  });
+
+  test("connect guide card is hidden by default and shown with h", () => {
+    const hidden = plainLines(baseState()).join("\n");
+    expect(hidden).not.toContain("Connect Guide");
+    const shown = plainLines(baseState({ showGuide: true })).join("\n");
+    expect(shown).toContain("Connect Guide");
+    expect(shown).toContain("http://127.0.0.1:8080/v1");
+    expect(shown).toContain("glm-5.3");
+    expect(shown).toContain("connect other apps [h]");
+  });
+
+  test("guide toggle button registers an h-key region", () => {
+    const { regions } = buildFrame(baseState());
+    expect(regions.map((r) => r.action)).toContainEqual({ kind: "key", key: "h" });
   });
 
   test("no line exceeds the terminal width (CJK logs included)", () => {
@@ -461,9 +467,9 @@ describe("buildFrame", () => {
 
   test("quota card hides on short terminals so the Logs card keeps room", () => {
     const quota = { status: "ok" as const, balances: [{ showName: "GLM-5.3", remainingUnits: 1, totalUnits: 2 }], coding: null, errors: [], error: "", fetchedAt: Date.now() };
-    const text = plainLines(baseState({ height: 21, quota })).join("\n");
+    const text = plainLines(baseState({ height: 22, quota })).join("\n");
     expect(text).not.toContain("Quota");
-    const textTall = plainLines(baseState({ height: 22, quota })).join("\n");
+    const textTall = plainLines(baseState({ height: 23, quota })).join("\n");
     expect(textTall).toContain("Quota");
   });
 

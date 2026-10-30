@@ -44,8 +44,6 @@ const DEFAULTS = {
   LOG_LEVEL: "info" as const,
   ZAI_ANTHROPIC_BASE: "https://api.z.ai/api/anthropic",
   ZAI_OPENAI_BASE: "https://api.z.ai/api/coding/paas/v4",
-  BIGMODEL_ANTHROPIC_BASE: "https://open.bigmodel.cn/api/anthropic",
-  BIGMODEL_OPENAI_BASE: "https://open.bigmodel.cn/api/coding/paas/v4",
   SOURCE_TITLE: "cli",
   REFERER_ORIGIN: "https://zcode.z.ai",
   CLIENT_IDENTITY_MODE: "enforce" as const,
@@ -115,10 +113,6 @@ export function loadConfig(path: string): ProxyConfig {
     anthropicBase: parsed?.providers?.zai?.anthropicBase ?? DEFAULTS.ZAI_ANTHROPIC_BASE,
     openaiBase: parsed?.providers?.zai?.openaiBase ?? DEFAULTS.ZAI_OPENAI_BASE,
   };
-  const bigmodel: ProviderEndpoints = {
-    anthropicBase: parsed?.providers?.bigmodel?.anthropicBase ?? DEFAULTS.BIGMODEL_ANTHROPIC_BASE,
-    openaiBase: parsed?.providers?.bigmodel?.openaiBase ?? DEFAULTS.BIGMODEL_OPENAI_BASE,
-  };
 
   // --- models ---
   const defaultModel = typeof parsed?.defaultModel === "string" ? parsed.defaultModel : DEFAULTS.DEFAULT_MODEL;
@@ -150,7 +144,7 @@ export function loadConfig(path: string): ProxyConfig {
     auth: { proxyApiKey, oauthCredentialsPath },
     provider,
     plan,
-    providers: { zai, bigmodel },
+    providers: { zai },
     defaultModel,
     models,
     identity,
@@ -338,11 +332,11 @@ function resolvePort(raw: unknown): number {
   return n;
 }
 
-/** Resolve and validate provider string. */
-function resolveProvider(raw: unknown): "zai" | "bigmodel" {
+/** Resolve and validate provider string. Single provider: zai. */
+function resolveProvider(raw: unknown): "zai" {
   const v = typeof raw === "string" ? raw : DEFAULTS.PROVIDER;
-  if (v !== "zai" && v !== "bigmodel") {
-    throw new Error(`Invalid provider "${v}": must be "zai" or "bigmodel"`);
+  if (v !== "zai") {
+    throw new Error(`Invalid provider "${v}": only "zai" is supported`);
   }
   return v;
 }

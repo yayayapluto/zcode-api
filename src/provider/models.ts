@@ -1,7 +1,7 @@
 /**
  * Pinned model catalog for GLM coding plan.
  *
- * Hardcoded to the exact models available on the Z.AI / Bigmodel coding-plan
+ * Hardcoded to the exact models available on the Z.AI coding-plan
  * tier. This replaces the previous `_reverse/models_catalog.json` import,
  * removing that runtime dependency. Update this list when new GLM models are
  * released or specs change.
@@ -11,7 +11,7 @@ import type { ModelDef } from "./types.js";
 
 /** All models available on the GLM coding plan, pinned with verified specs. */
 export const MODELS: ModelDef[] = [
-  // Specs synced to ZCode 3.11.2 `_reverse/models_catalog.json` (zai/bigmodel
+  // Specs synced to ZCode 3.11.2 `_reverse/models_catalog.json`
   // entries are identical): contextWindow + maxOutputTokens per model.
   // Order is a deliberate deviation from the upstream catalog: current-gen
   // defaults lead the advertised list; consumers are id-keyed, not positional.

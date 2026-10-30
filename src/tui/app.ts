@@ -18,10 +18,9 @@ import { AuthManager } from "../auth/manager.js";
 import { startServer, type ProxyServer } from "../server/server.js";
 import { buildServerOptions } from "../server/server-options.js";
 import { loadCredential, saveCredential, clearCredential } from "../auth/store.js";
-import { ZaiOAuthClient, BigmodelOAuthClient, BigmodelPollOAuthClient, LOGIN_TIMEOUT_MS, parsePastedCallbackUrl, type OAuthFlowClient, type OAuthFlowStart, type OAuthFlowTokens } from "../auth/oauth.js";
+import { ZaiOAuthClient, type OAuthFlowClient, type OAuthFlowTokens } from "../auth/oauth.js";
 import { KeyResolver } from "../auth/resolver.js";
 import { openBrowser } from "../runtime/open-browser.js";
-import { pasteLoginInstructions, readPastedLine, boldIfTTY } from "../runtime/paste-login.js";
 import { isGuestOriginError, describeGuestError } from "../runtime/guest-error.js";
 import { ensureDeviceMidInConfig, VERSION, type ServeArgs } from "../index.js";
 import { collectQuotaSnapshot, type QuotaSnapshot } from "../server/routes-quota.js";
@@ -76,6 +75,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     serverError: "",
     loginInFlight: false,
     loginHint: "",
+    showGuide: false,
     quota: null as QuotaState | null,
     toast: null as { text: string; kind: "ok" | "err" | "info" } | null,
   };
@@ -168,12 +168,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
   let renderTimer: ReturnType<typeof setTimeout> | null = null;
   let lastRenderAt = 0;
   let activeRegions: ClickRegion[] = [];
-  // Paste login (L key) hands the terminal back for a moment: renders and
-  // key handling are frozen while the real screen shows the paste prompt.
-  let rendersSuspended = false;
-  let inputSuspended = false;
   function renderNow(): void {
-    if (rendersSuspended) return; // paste prompt owns the terminal
     if (renderTimer) clearTimeout(renderTimer); // watchdog may fire mid-cycle
     renderTimer = null;
     lastRenderAt = Date.now();
@@ -198,6 +193,10 @@ export async function runTui(args: ServeArgs): Promise<void> {
         responsesEnabled: config.responses.enabled,
         claimAuto: config.claim.enabled && config.claim.auto,
         quota: state.quota,
+        showGuide: state.showGuide,
+        guideBase: `http://${config.server.host}:${config.server.port}`,
+        guideKeyHint: config.auth.proxyApiKey ? "your proxyApiKey" : "anything (e.g. sk-1234)",
+        guideModels: config.models,
         logTotal: view.total,
         logView: view.lines,
         logFollowing: pane.following,
@@ -390,12 +389,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
     }
   }
 
-  // --- provider / plan switching (mirrors the shared setConfig command) ---
-  function switchProvider(): void {
-    const next: ProviderId = state.provider === "zai" ? "bigmodel" : "zai";
-    applyConfigChange(next, state.plan, `provider → ${next}`);
-  }
-
+  // --- plan switching (mirrors the shared setConfig command) ---
   function switchPlan(): void {
     const next: PlanTier = state.plan === "coding-plan" ? "start-plan" : "coding-plan";
     applyConfigChange(state.provider, next, `plan → ${next}`);
@@ -421,9 +415,9 @@ export async function runTui(args: ServeArgs): Promise<void> {
   }
 
   // --- login / logout (mirrors the control-listener startOAuth/logout) -----
-  let activeOauth: { client: OAuthFlowClient; provider: ProviderId } | null = null;
+  let activeOauth: { client: OAuthFlowClient } | null = null;
 
-  async function startLogin(opts: { paste?: boolean } = {}): Promise<void> {
+  async function startLogin(): Promise<void> {
     // Stop-first guard (logout/switching discipline): a login completing
     // mid-run hot-swaps the credential into the LIVE proxy (settleLogin),
     // silently switching the account serving traffic.
@@ -435,36 +429,9 @@ export async function runTui(args: ServeArgs): Promise<void> {
       setToast("login already in progress", "info");
       return;
     }
-    const provider = state.provider;
-    if (opts.paste && provider !== "bigmodel") {
-      setToast("paste login is bigmodel-only — poll login already works headless (press l)", "info");
-      return;
-    }
-
-    if (provider === "bigmodel" && opts.paste) {
-      const client = new BigmodelOAuthClient();
-      let started: Awaited<ReturnType<BigmodelOAuthClient["start"]>>;
-      try {
-        started = await client.start();
-      } catch (err) {
-        void client.close().catch(() => {});
-        setToast(`login failed: ${(err as Error).message}`, "err");
-        return;
-      }
-      activeOauth = { client, provider };
-      state.loginInFlight = true;
-      console.log(`OAuth: opening ${started.authorizeUrl}`);
-      console.log("If the browser did not open, copy the URL above into a browser.");
-      openBrowser(started.authorizeUrl);
-      state.loginHint = "paste the callback URL in the terminal…";
-      scheduleRender();
-      settleLogin(runPasteLoginInTui(client, started), client, provider);
-      return;
-    }
-
-    // Both providers: server-mediated poll login (ZCode 3.12.3 default) — no
-    // local callback, works headless with the URL opened on any device.
-    const client: OAuthFlowClient = provider === "bigmodel" ? new BigmodelPollOAuthClient() : new ZaiOAuthClient();
+    // Server-mediated poll login (Z.AI default) — no local callback, works
+    // headless with the URL opened on any device.
+    const client: OAuthFlowClient = new ZaiOAuthClient();
     let started: Awaited<ReturnType<OAuthFlowClient["start"]>>;
     try {
       started = await client.start();
@@ -473,7 +440,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
       setToast(`login failed: ${(err as Error).message}`, "err");
       return;
     }
-    activeOauth = { client, provider };
+    activeOauth = { client };
     state.loginInFlight = true;
     state.loginHint = "waiting for browser authorization…";
     console.log(`OAuth: opening ${started.authorizeUrl}`);
@@ -484,32 +451,21 @@ export async function runTui(args: ServeArgs): Promise<void> {
     openBrowser(started.authorizeUrl);
     scheduleRender();
 
-    settleLogin(client.complete(started), client, provider);
-  }
-
-  /** `L` key: start a classic paste login (bigmodel fallback for the poll flow). */
-  function requestPasteLogin(): void {
-    if (state.provider !== "bigmodel") {
-      setToast("paste login is bigmodel-only — poll login already works headless", "info");
-      return;
-    }
-    if (state.loginInFlight) {
-      setToast("login in progress — poll login already works headless; wait for it to finish", "info");
-      return;
-    }
-    void startLogin({ paste: true });
+    settleLogin(client.complete(started), client);
   }
 
   /** Shared completion tail: resolve key, save, and ALWAYS close the client. */
-  function settleLogin(pending: Promise<OAuthFlowTokens>, client: OAuthFlowClient, provider: ProviderId): void {
+  function settleLogin(pending: Promise<OAuthFlowTokens>, client: OAuthFlowClient): void {
     pending.then(async (tokens) => {
       const resolver = new KeyResolver();
-      const cred = await resolver.resolveCodingPlanCredential(tokens.accessToken, provider, tokens.userId);
+      const cred = await resolver.resolveCodingPlanCredential(tokens.accessToken, tokens.userId);
       if (tokens.jwt) cred.jwt = tokens.jwt;
       await saveCredential(cred);
       if (serverRef.current) auth.setOAuthCredential(cred);
-      console.log(`OAuth completed for ${provider}`);
+      console.log(`OAuth completed for zai`);
       setToast("logged in", "ok");
+      // Hands-free run: a fresh login means the proxy should serve immediately.
+      if (!serverRef.current) void startProxy();
     }).catch((err: unknown) => {
       const msg = (err as Error)?.message ?? String(err);
       console.error(`OAuth flow ended without success: ${msg}`);
@@ -522,38 +478,6 @@ export async function runTui(args: ServeArgs): Promise<void> {
       state.loginHint = "";
       void refreshAuth();
     });
-  }
-
-  /**
-   * Paste login for the TUI: briefly hands the terminal back (leaves the alt
-   * screen, drops raw mode) so the user can paste the redirected callback
-   * URL, then re-enters the TUI and exchanges the code. The callback server
-   * stays bound — it only defines the redirect port; the browser cannot
-   * reach it from another machine anyway.
-   */
-  async function runPasteLoginInTui(
-    client: BigmodelOAuthClient,
-    started: OAuthFlowStart,
-  ): Promise<OAuthFlowTokens> {
-    let pasted: string;
-    try {
-      rendersSuspended = true;
-      inputSuspended = true;
-      try { (stdin as { setRawMode(m: boolean): void }).setRawMode(false); } catch { /* not raw-able */ }
-      restore(); // leave the alt screen: the real terminal takes over
-      realStdoutWrite("\n" + pasteLoginInstructions(started.authorizeUrl, started.callbackUrl, LOGIN_TIMEOUT_MS) + "\n\n");
-      realStdoutWrite(boldIfTTY("Paste the FULL redirected URL here, then press Enter:") + "\n> ");
-      pasted = await readPastedLine(LOGIN_TIMEOUT_MS);
-    } finally {
-      enterAltScreen();
-      try { (stdin as { setRawMode(m: boolean): void }).setRawMode(true); } catch { /* ignore */ }
-      inputSuspended = false;
-      rendersSuspended = false;
-      renderNow();
-    }
-    const code = parsePastedCallbackUrl(pasted, started.state);
-    realStdoutWrite("Exchanging authorization code…\n");
-    return client.exchangeCode(code, started.callbackUrl, started.state);
   }
 
   async function logout(): Promise<void> {
@@ -583,7 +507,6 @@ export async function runTui(args: ServeArgs): Promise<void> {
   (stdin as { setRawMode(m: boolean): void }).setRawMode(true);
   stdin.resume();
   stdin.on("data", (chunk: string) => {
-    if (inputSuspended) return; // paste-login readline owns the terminal
     for (const action of parser.feed(chunk)) handleKey(action);
   });
 
@@ -613,8 +536,6 @@ export async function runTui(args: ServeArgs): Promise<void> {
         scrollDown(3);
         return;
       case "char": {
-        // Uppercase L must not collapse into "l" below: paste fallback (headless).
-        if (action.key === "L") { requestPasteLogin(); return; }
         switch (action.key.toLowerCase()) {
           case "q": quit(); return;
           case "s": toggleProxy(); return;
@@ -622,7 +543,7 @@ export async function runTui(args: ServeArgs): Promise<void> {
           case "o": void logout(); return;
           case "r": void refreshQuota(); return;
           case "u": void runUpdateCheck(true); return;
-          case "p": switchProvider(); return;
+          case "h": state.showGuide = !state.showGuide; scheduleRender(); return;
           case "t": switchPlan(); return;
           case "c": pane.clear(); scheduleRender(); return;
           case "g": pane.followBottom(); scheduleRender(); return;
@@ -646,9 +567,6 @@ export async function runTui(args: ServeArgs): Promise<void> {
     switch (action.kind) {
       case "key":
         handleKey({ type: "char", key: action.key });
-        return;
-      case "provider":
-        applyConfigChange(action.value, state.plan, `provider → ${action.value}`);
         return;
       case "plan":
         applyConfigChange(state.provider, action.value, `plan → ${action.value}`);
@@ -710,7 +628,10 @@ export async function runTui(args: ServeArgs): Promise<void> {
   await refreshAuth();
   renderNow();
   if (!state.loggedIn) {
-    setToast("not logged in — press l to login", "err");
+    // First run lands here straight after the inline CLI login; a returning
+    // user who logged out gets the login started immediately too.
+    setToast("starting Z.AI login…", "info");
+    await startLogin();
   } else {
     await startProxy();
   }

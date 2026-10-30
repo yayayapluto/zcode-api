@@ -368,7 +368,7 @@ describe("panel ↔ control dispatcher wiring", () => {
   });
 
   it("answers `status` from the same hook state the proxy entry uses", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "start-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "start-plan", proxyPort: 0 };
     const handleControl = createControlDispatcher(state, { logBuffer: new LogBuffer() });
     const panel = await startPanel(handleControl);
 
@@ -376,7 +376,7 @@ describe("panel ↔ control dispatcher wiring", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; provider: string; plan: string; proxyPort: number };
     expect(body.ok).toBe(true);
-    expect(body.provider).toBe("bigmodel");
+    expect(body.provider).toBe("zai");
     expect(body.plan).toBe("start-plan");
     expect(body.proxyPort).toBe(0);
   });

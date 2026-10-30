@@ -1,5 +1,5 @@
 /**
- * Z.AI and Bigmodel provider definitions.
+ * Z.AI provider definition.
  * @see _reverse/NOTEPAD.md "Provider Endpoints"
  */
 import type { ProviderDef, ProviderId } from "./types.js";
@@ -12,17 +12,8 @@ export const ZAI_PROVIDER: ProviderDef = {
   bizHost: "https://api.z.ai",
 };
 
-export const BIGMODEL_PROVIDER: ProviderDef = {
-  id: "bigmodel",
-  displayName: "BigModel / 智谱",
-  anthropicBaseURL: "https://open.bigmodel.cn/api/anthropic",
-  openaiBaseURL: "https://open.bigmodel.cn/api/coding/paas/v4",
-  bizHost: "https://open.bigmodel.cn",
-};
-
 const PROVIDERS: Record<ProviderId, ProviderDef> = {
   zai: ZAI_PROVIDER,
-  bigmodel: BIGMODEL_PROVIDER,
 };
 
 /** Look up a provider definition by id. */

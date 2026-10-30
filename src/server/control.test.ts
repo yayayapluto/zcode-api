@@ -1,5 +1,4 @@
-import { describe, it, expect, afterEach } from "bun:test";
-import net from "node:net";
+import { describe, it, expect } from "bun:test";
 import {
   createControlDispatcher,
   LogBuffer,
@@ -7,7 +6,7 @@ import {
   type ControlResponse,
   type HandlerContext,
 } from "./control.js";
-import { BigmodelOAuthClient } from "../auth/oauth.js";
+import type { OAuthFlowClient, OAuthFlowStart, OAuthFlowTokens } from "../auth/oauth.js";
 
 async function dispatch(
   cmd: { cmd: string; [k: string]: unknown },
@@ -23,7 +22,7 @@ async function dispatch(
 describe("control dispatcher — status", () => {
   it("returns running status for {cmd:status}", async () => {
     const state: ControlState = {
-      provider: "bigmodel",
+      provider: "zai",
       plan: "coding-plan",
       proxyPort: 8080,
     };
@@ -31,37 +30,25 @@ describe("control dispatcher — status", () => {
     expect(result.ok).toBe(true);
     if (result.ok && "state" in result) {
       expect(result.state).toBe("running");
-      expect(result.provider).toBe("bigmodel");
+      expect(result.provider).toBe("zai");
       expect(result.plan).toBe("coding-plan");
       expect(result.proxyPort).toBe(8080);
     }
   });
 
   it("returns error for unknown cmd", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const result = await dispatch({ cmd: "bogus" }, state);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toContain("unknown_cmd");
     }
   });
-
-  it("returns error for deliverOAuthCode without an active flow", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
-    const result = await dispatch(
-      { cmd: "deliverOAuthCode", provider: "bigmodel", code: "x", state: "y" },
-      state,
-    );
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toContain("no_matching_oauth_flow");
-    }
-  });
 });
 
 describe("control dispatcher — lifecycle commands", () => {
   it("startProxy calls hook and updates state.proxyPort", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onStartProxy: async () => ({ ok: true, port: 9999 }),
@@ -75,7 +62,7 @@ describe("control dispatcher — lifecycle commands", () => {
   });
 
   it("startProxy surfaces hook errors", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onStartProxy: async () => ({ ok: false, error: "not_logged_in" }),
@@ -88,7 +75,7 @@ describe("control dispatcher — lifecycle commands", () => {
   });
 
   it("startProxy returns error when hook missing", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const result = await dispatch({ cmd: "startProxy" }, state);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -97,7 +84,7 @@ describe("control dispatcher — lifecycle commands", () => {
   });
 
   it("stopProxy resets state.proxyPort to 0", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 8080 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 8080 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onStopProxy: async () => ({ ok: true }),
@@ -110,7 +97,7 @@ describe("control dispatcher — lifecycle commands", () => {
 
 describe("control dispatcher — setConfig", () => {
   it("updates provider and plan via hook and syncs state", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onSetConfig: async (changes) => ({
@@ -131,7 +118,7 @@ describe("control dispatcher — setConfig", () => {
 
   it("returns config_update_unavailable when hook missing", async () => {
     const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
-    const result = await dispatch({ cmd: "setConfig", provider: "bigmodel" }, state);
+    const result = await dispatch({ cmd: "setConfig", provider: "zai" }, state);
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error).toBe("config_update_unavailable");
@@ -147,7 +134,7 @@ describe("control dispatcher — getLogs", () => {
     const ctx: HandlerContext = { logBuffer };
     const result = await dispatch(
       { cmd: "getLogs" },
-      { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 },
+      { provider: "zai", plan: "coding-plan", proxyPort: 0 },
       ctx,
     );
     expect(result.ok).toBe(true);
@@ -165,7 +152,7 @@ describe("control dispatcher — getLogs", () => {
     const ctx: HandlerContext = { logBuffer };
     const result = await dispatch(
       { cmd: "getLogs", since: 1 },
-      { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 },
+      { provider: "zai", plan: "coding-plan", proxyPort: 0 },
       ctx,
     );
     expect(result.ok).toBe(true);
@@ -180,7 +167,7 @@ describe("control dispatcher — getLogs", () => {
     const ctx: HandlerContext = { logBuffer };
     const result = await dispatch(
       { cmd: "getLogs", since: 1 },
-      { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 },
+      { provider: "zai", plan: "coding-plan", proxyPort: 0 },
       ctx,
     );
     expect(result.ok).toBe(true);
@@ -192,7 +179,7 @@ describe("control dispatcher — getLogs", () => {
 
 describe("control dispatcher — quota", () => {
   const snapshot = {
-    provider: "bigmodel",
+    provider: "zai",
     serverTime: 1759195200,
     jwt: null,
     balances: [],
@@ -202,7 +189,7 @@ describe("control dispatcher — quota", () => {
   };
 
   it("returns the snapshot from the onQuota hook", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onQuota: async () => snapshot,
@@ -216,7 +203,7 @@ describe("control dispatcher — quota", () => {
   });
 
   it("returns quota_unavailable when the hook is missing", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const result = await dispatch({ cmd: "quota" }, state);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -225,7 +212,7 @@ describe("control dispatcher — quota", () => {
   });
 
   it("surfaces hook failures verbatim (not-logged-in message)", async () => {
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
       onQuota: async () => {
@@ -240,79 +227,63 @@ describe("control dispatcher — quota", () => {
   });
 });
 
-describe("control dispatcher — startOAuth callback-port lifecycle", () => {
-  /** Find a free loopback TCP port (bind port 0, read back, close). */
-  async function freePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const srv = net.createServer();
-      srv.on("error", reject);
-      srv.listen(0, "127.0.0.1", () => {
-        const { port } = srv.address() as net.AddressInfo;
-        srv.close(() => resolve(port));
-      });
-    });
+describe("control dispatcher — startOAuth", () => {
+  /** Offline login client: start succeeds, complete never settles (no network). */
+  function stubClient(closed: { count: number }): OAuthFlowClient {
+    return {
+      provider: "zai",
+      start: async (): Promise<OAuthFlowStart> => ({
+        authorizeUrl: "https://login.example/authorize",
+        callbackUrl: "",
+        state: "flow-1",
+      }),
+      complete: (): Promise<OAuthFlowTokens> => new Promise(() => {}),
+      close: async () => {
+        closed.count++;
+      },
+    } as unknown as OAuthFlowClient;
   }
 
-  /** True when nothing is listening on `port` anymore. */
-  async function portIsFree(port: number): Promise<boolean> {
-    return new Promise((resolve) => {
-      const srv = net.createServer();
-      srv.once("error", () => resolve(false));
-      srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
-    });
-  }
-
-  afterEach(() => {
-    delete process.env.ZCODE_OAUTH_CALLBACK_PORT;
-  });
-
-  it("releases the callback port when the flow is rejected (abandoned login)", async () => {
-    const port = await freePort();
-    process.env.ZCODE_OAUTH_CALLBACK_PORT = String(port);
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
-    // Inject the classic (localhost-callback) client: the port-lifecycle
-    // guarantee is a callback-flow property; the default bigmodel login is
-    // the network-bound poll flow, which binds nothing.
+  it("returns the authorize URL and tracks the in-flight flow", async () => {
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
+    const closed = { count: 0 };
     const ctx: HandlerContext = {
       logBuffer: new LogBuffer(),
-      createLoginClient: () => new BigmodelOAuthClient(),
+      createLoginClient: () => stubClient(closed),
     };
 
-    const started = await dispatch({ cmd: "startOAuth", provider: "bigmodel" }, state, ctx);
+    const started = await dispatch({ cmd: "startOAuth" }, state, ctx);
     expect(started.ok).toBe(true);
+    if (started.ok && "authorizeUrl" in started) {
+      expect(started.authorizeUrl).toBe("https://login.example/authorize");
+    }
     expect(state.activeOauth).toBeDefined();
 
-    // Simulate the user abandoning the flow: a callback with a bad state
-    // rejects every waitForCallback waiter.
-    const resp = await fetch(`http://127.0.0.1:${port}/oauth/callback/bigmodel?state=bad&code=x`);
-    expect(resp.status).toBe(400);
-    await Bun.sleep(50);
-
-    expect(state.activeOauth).toBeUndefined();
-    expect(await portIsFree(port)).toBe(true);
-  });
-
-  it("a second startOAuth tears down the previous flow instead of hitting EADDRINUSE", async () => {
-    const port = await freePort();
-    process.env.ZCODE_OAUTH_CALLBACK_PORT = String(port);
-    const state: ControlState = { provider: "bigmodel", plan: "coding-plan", proxyPort: 0 };
-    const ctx: HandlerContext = {
-      logBuffer: new LogBuffer(),
-      createLoginClient: () => new BigmodelOAuthClient(),
-    };
-
-    const first = await dispatch({ cmd: "startOAuth", provider: "bigmodel" }, state, ctx);
-    expect(first.ok).toBe(true);
-
-    // Previously this threw EADDRINUSE (500) because the first flow still
-    // held the fixed callback port.
-    const second = await dispatch({ cmd: "startOAuth", provider: "bigmodel" }, state, ctx);
-    expect(second.ok).toBe(true);
-
-    // Clean up the flow started by the second command.
     state.activeOauth?.client.close().catch(() => {});
     state.activeOauth = undefined;
-    await Bun.sleep(50);
+    expect(closed.count).toBe(1);
+  });
+
+  it("a second startOAuth tears down the previous flow", async () => {
+    const state: ControlState = { provider: "zai", plan: "coding-plan", proxyPort: 0 };
+    const firstClosed = { count: 0 };
+    const secondClosed = { count: 0 };
+    let n = 0;
+    const ctx: HandlerContext = {
+      logBuffer: new LogBuffer(),
+      createLoginClient: () => stubClient(n++ === 0 ? firstClosed : secondClosed),
+    };
+
+    const first = await dispatch({ cmd: "startOAuth" }, state, ctx);
+    expect(first.ok).toBe(true);
+    const second = await dispatch({ cmd: "startOAuth" }, state, ctx);
+    expect(second.ok).toBe(true);
+    expect(firstClosed.count).toBe(1);
+    expect(secondClosed.count).toBe(0);
+
+    state.activeOauth?.client.close().catch(() => {});
+    state.activeOauth = undefined;
+    expect(secondClosed.count).toBe(1);
   });
 });
 

@@ -15,8 +15,6 @@ import type { ProviderId } from "../provider/types.js";
 import type { Credential } from "../auth/types.js";
 import {
   ZaiOAuthClient,
-  BigmodelPollOAuthClient,
-  AuthCodeOAuthClient,
   type OAuthFlowClient,
 } from "../auth/oauth.js";
 import { KeyResolver } from "../auth/resolver.js";
@@ -26,11 +24,10 @@ import type { QuotaSnapshot } from "./routes-quota.js";
 /** Supported plan tiers. Mirrors `ProxyConfig.plan`. */
 type PlanTier = "coding-plan" | "start-plan";
 
-/** The control protocol: request shape for `POST /control`. */
+/** The control protocol: request shape for the in-process dispatcher. */
 export type ControlCommand =
   | { cmd: "status" }
-  | { cmd: "startOAuth"; provider: ProviderId }
-  | { cmd: "deliverOAuthCode"; provider: ProviderId; code: string; state: string }
+  | { cmd: "startOAuth" }
   | { cmd: "logout" }
   | { cmd: "setConfig"; provider?: ProviderId; plan?: PlanTier }
   | { cmd: "startProxy" }
@@ -150,7 +147,7 @@ export interface HandlerContext {
   onQuota?: () => Promise<QuotaSnapshot>;
   logBuffer: LogBuffer;
   /** Overrides login-client construction (tests inject offline clients). */
-  createLoginClient?: (provider: ProviderId) => OAuthFlowClient;
+  createLoginClient?: () => OAuthFlowClient;
 }
 
 async function dispatch(
@@ -172,22 +169,17 @@ async function dispatch(
     }
 
     case "startOAuth": {
-      // Tear down any previous in-flight flow so its callback port is released.
+      // Tear down any previous in-flight flow.
       if (state.activeOauth) {
         await state.activeOauth.client.close().catch(() => {});
         state.activeOauth = undefined;
       }
-      // Both providers use the server-mediated poll login (ZCode 3.12.3
-      // default) — no local callback; the flow completes server-side.
+      // Server-mediated poll login — no local callback; the flow completes
+      // server-side while the client polls.
       const client: OAuthFlowClient = ctx.createLoginClient
-        ? ctx.createLoginClient(cmd.provider)
-        : cmd.provider === "bigmodel"
-          ? new BigmodelPollOAuthClient()
-          : new ZaiOAuthClient();
+        ? ctx.createLoginClient()
+        : new ZaiOAuthClient();
       const started = await client.start();
-      const callbackPort = started.callbackUrl
-        ? Number(new URL(started.callbackUrl).port) || 80
-        : 0;
       state.activeOauth = {
         client,
         callbackUrl: started.callbackUrl,
@@ -195,17 +187,16 @@ async function dispatch(
       };
       client.complete(started).then(async (tokens) => {
         const resolver = new KeyResolver();
-        const cred: Credential = await resolver.resolveCodingPlanCredential(tokens.accessToken, cmd.provider, tokens.userId);
+        const cred: Credential = await resolver.resolveCodingPlanCredential(tokens.accessToken, tokens.userId);
         if (tokens.jwt) cred.jwt = tokens.jwt;
         await saveCredential(cred);
-        console.log(`OAuth completed for ${cmd.provider}`);
+        console.log(`OAuth completed for zai`);
       }).catch((err: unknown) => {
         // Timeouts / rejections are expected when the user abandons the
         // browser; nothing to surface beyond the log buffer.
         console.error(`OAuth flow ended without success: ${(err as Error)?.message ?? String(err)}`);
       }).finally(() => {
-        // MUST run on rejection too — otherwise the callback port leaks until
-        // process death.
+        // MUST run on rejection too.
         void client.close().catch(() => {});
         if (state.activeOauth?.state === started.state) state.activeOauth = undefined;
       });
@@ -213,35 +204,8 @@ async function dispatch(
         ok: true,
         event: "oauthUrl",
         authorizeUrl: started.authorizeUrl,
-        callbackPort,
+        callbackPort: 0,
       };
-    }
-
-    case "deliverOAuthCode": {
-      const active = state.activeOauth;
-      // Code delivery only applies to callback-based (auth-code) flows — the
-      // Z.AI cli login completes via server polling and has no code to deliver.
-      if (!(active?.client instanceof AuthCodeOAuthClient) || active.state !== cmd.state) {
-        return { ok: false, error: "no_matching_oauth_flow" };
-      }
-      try {
-        const { accessToken, userId, jwt } = await active.client.exchangeCode(
-          cmd.code,
-          active.callbackUrl,
-          cmd.state,
-        );
-        const resolver = new KeyResolver();
-        const cred: Credential = await resolver.resolveCodingPlanCredential(accessToken, cmd.provider, userId);
-        if (jwt) cred.jwt = jwt;
-        await saveCredential(cred);
-        state.activeOauth = undefined;
-        await active.client.close().catch(() => {});
-        return { ok: true, event: "loginOk", provider: cmd.provider };
-      } catch (err) {
-        state.activeOauth = undefined;
-        await active.client.close().catch(() => {});
-        return { ok: false, error: `oauth_exchange_failed: ${(err as Error).message}` };
-      }
     }
 
     case "logout": {

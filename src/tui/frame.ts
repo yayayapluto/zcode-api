@@ -1,15 +1,15 @@
 /**
  * Pure frame renderer for the TUI. Takes a complete view-model and returns
  * the full ANSI frame plus the clickable hit regions — interactive rows are
- * rendered as bracketed buttons (`[ zai ]`, `[S] Start`) and every button
+ * rendered as bracketed buttons (`[S] Start`) and every button
  * registers a row/column span the app hit-tests against mouse clicks (SGR
  * mouse tracking, opencode-style). No I/O, no clock — fully deterministic so
  * tests can snapshot both the text and the regions.
  *
- * Layout: three stacked cards (Settings & Login /
- * Proxy Server / Logs) plus a toast line and a key-hint footer (the hints
- * are themselves clickable). The top two cards are fixed-height; the log
- * card absorbs the remaining terminal rows.
+ * Layout: Settings & Login / Proxy Server / Connect Guide (h toggle) /
+ * Quota / Logs plus a toast line and a key-hint footer (the hints
+ * are themselves clickable). The Logs card absorbs the remaining terminal
+ * rows; the Guide card is fixed-height and only rendered when toggled on.
  */
 import { displayWidth, truncateToWidth } from "./width.js";
 
@@ -18,7 +18,6 @@ type Seg = { t: string; c?: string };
 /** What a mouse click on a button should do. `key` reuses the key bindings. */
 export type ClickAction =
   | { kind: "key"; key: string }
-  | { kind: "provider"; value: "zai" | "bigmodel" }
   | { kind: "plan"; value: "coding-plan" | "start-plan" }
   | { kind: "follow" };
 
@@ -101,6 +100,14 @@ export interface FrameState {
   responsesEnabled: boolean;
   claimAuto: boolean;
   quota: QuotaState | null;
+  /** Connect-guide card visibility (h key). */
+  showGuide: boolean;
+  /** Proxy base URL for the guide (e.g. http://127.0.0.1:8080). */
+  guideBase: string;
+  /** API-key hint for the guide (proxy key or free-fill note). */
+  guideKeyHint: string;
+  /** Model ids listed in the guide. */
+  guideModels: string[];
   logTotal: number;
   logView: ReadonlyArray<{ level: string; text: string }>;
   logFollowing: boolean;
@@ -394,15 +401,9 @@ export function buildFrame(s: FrameState): Frame {
 
   const providerRow = composeRow(
     w, lines.length, "Provider",
-    optionParts(
-      ["zai", "bigmodel"],
-      s.provider,
-      (v) => ({ kind: "provider", value: v as "zai" | "bigmodel" }),
-      busy,
-    ),
+    [{ t: " zai (fixed) ", c: DIM }],
   );
   emit(providerRow.line);
-  regions.push(...providerRow.regions);
 
   const planRow = composeRow(
     w, lines.length, "Plan",
@@ -453,10 +454,10 @@ export function buildFrame(s: FrameState): Frame {
 
   // --- Quota card (auto-hidden when logged out / terminal too short) --------
   // Height budget: everything above + the Logs card's borders/one row + the
-  // footer needs 21 rows, and each balance row costs one more — so on a 24-row
+  // footer needs 22 rows, and each balance row costs one more — so on a 24-row
   // terminal the card shows at most 3 models instead of pushing the footer off
   // the screen.
-  const quotaRows = s.quota ? Math.min(MAX_QUOTA_ROWS, h - 21) : 0;
+  const quotaRows = s.quota ? Math.min(MAX_QUOTA_ROWS, h - 22) : 0;
   if (s.quota && quotaRows >= 1) {
     const pill: Seg[] =
       s.quota.status === "loading"
@@ -596,18 +597,46 @@ export function buildFrame(s: FrameState): Frame {
   emit(serverButtonsRow.line);
   regions.push(...serverButtonsRow.regions);
 
+  const guideHintRow = composeRow(w, lines.length, "", [
+    { t: " Guide ", c: BTN_GRAY, action: { kind: "key", key: "h" } },
+    { t: "  connect other apps [h]", c: DIM },
+  ]);
+  emit(guideHintRow.line);
+  regions.push(...guideHintRow.regions);
+
   if (s.serverStatus === "error" && s.serverError) {
     emit((composeRow(w, lines.length, "Error", [{ t: s.serverError, c: RED }])).line);
   }
   emit(renderBottomBorder(w));
   emit("");
 
+  // --- Connect Guide card (h toggle, fixed height) --------------------------
+  // 9 lines when shown: top border + 6 rows + bottom border + blank.
+  const GUIDE_LINES = 9;
+  if (s.showGuide) {
+    emit(renderTopBorder(w, [{ t: "Connect Guide", c: BOLD }]));
+    const guideRow = (label: string, value: string): void => {
+      emit((composeRow(w, lines.length, label, [
+        { t: truncateToWidth(value, Math.max(0, w - 18)), c: CYAN },
+      ])).line);
+    };
+    guideRow("OpenAI", `${s.guideBase}/v1`);
+    guideRow("Anthropic", s.guideBase);
+    guideRow("Responses", `${s.guideBase}/v1 (Codex wire_api=responses)`);
+    guideRow("API key", s.guideKeyHint);
+    guideRow("Models", s.guideModels.join(", "));
+    guideRow("Claude", `ANTHROPIC_BASE_URL=${s.guideBase} claude`);
+    emit(renderBottomBorder(w));
+    emit("");
+  }
+
   // --- Logs card (absorbs remaining height) -------------------------------
   const logRight: Seg[] = s.logFollowing
     ? [{ t: "following", c: GREEN }]
     : [{ t: `▼ ${s.logFromBottom} more · g follow`, c: AMBER }];
   const fixed =
-    lines.length + 2 /* log card borders */ + 1 /* footer */ + (s.toast ? 1 : 0);
+    lines.length + 2 /* log card borders */ + 1 /* footer */ + (s.toast ? 1 : 0) +
+    (s.showGuide ? GUIDE_LINES : 0);
   const logRows = Math.max(1, h - fixed);
   const logBorderRow = emit(renderTopBorder(w, [{ t: "Logs", c: BOLD }, { t: ` (${s.logTotal})`, c: DIM }], logRight));
   if (!s.logFollowing) {
@@ -634,7 +663,7 @@ export function buildFrame(s: FrameState): Frame {
   // narrow terminals, so the primary actions must come first.
   const footerItems: Array<[string, string]> = [
     ["s", "start/stop"], ["l", "login"], ["o", "logout"], ["g", "follow"], ["q", "quit"],
-    ["p", "provider"], ["t", "plan"], ["r", "quota refresh"], ["u", "update"], ["c", "clear"],
+    ["h", "guide"], ["t", "plan"], ["r", "quota refresh"], ["u", "update"], ["c", "clear"],
   ];
   footerParts.push({ t: "↑↓ scroll", c: DIM });
   for (const [key, label] of footerItems) {

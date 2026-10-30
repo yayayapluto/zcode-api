@@ -191,21 +191,4 @@ describe("KeyResolver", () => {
       .rejects.toThrow(/missing secretKey/);
   });
 
-  it("resolveCodingPlanCredential bigmodel tolerates a missing secretKey (bundle keeps requireSecretKey unset)", async () => {
-    const fetchImpl = mockFetch({
-      "getCustomerInfo": () => bizResponse({
-        organizations: [{ organizationId: "o1", organizationName: "默认机构", projects: [{ projectId: "p1", projectName: "默认项目" }] }],
-      }),
-      "api_keys/copy": () => bizResponse({}),
-      "api_keys": (body) => {
-        if (body) return bizResponse({ apiKey: "bmKey" });
-        return bizResponse([]);
-      },
-    });
-    const resolver = new KeyResolver(fetchImpl);
-    const cred = await resolver.resolveCodingPlanCredential("accessTok", "bigmodel");
-    expect(cred.apiKey).toBe("bmKey");
-    expect(cred.secret).toBeUndefined();
-    expect(cred.provider).toBe("bigmodel");
-  });
 });

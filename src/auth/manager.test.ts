@@ -11,7 +11,7 @@ describe("credentialString", () => {
   });
 
   it("returns apiKey only when secret absent", () => {
-    expect(credentialString({ apiKey: "abc", provider: "bigmodel" })).toBe("abc");
+    expect(credentialString({ apiKey: "abc", provider: "zai" })).toBe("abc");
   });
 });
 

@@ -1,5 +1,4 @@
 import type { Credential } from "./types.js";
-import type { ProviderId } from "../provider/types.js";
 import type { FetchFn } from "./oauth.js";
 
 const ZAI_API_KEY_NAME = "zcode-api-key";
@@ -135,42 +134,22 @@ export class KeyResolver {
 
   async resolveCodingPlanCredential(
     accessToken: string,
-    provider: ProviderId,
     userId?: string,
   ): Promise<Credential> {
-    if (provider === "zai") {
-      const bizToken = await this.resolveZaiBizToken(accessToken);
-      const host = "https://api.z.ai";
-      const authorization = `Bearer ${bizToken}`;
-
-      const { orgId, projectId } = await this.resolveCustomerInfo(host, authorization);
-      const { apiKey } = await this.findOrCreateApiKey(host, authorization, orgId, projectId);
-      // Bundle `dJr` runs with requireSecretKey=true for zai: a missing
-      // secretKey fails the login instead of storing a credential that can
-      // never sign (3.12.3: "API key copy response is missing secretKey.").
-      const secret = await this.getSecretKey(host, authorization, orgId, projectId, apiKey);
-      if (!secret) {
-        throw new Error("zai API key copy response is missing secretKey");
-      }
-
-      return { apiKey, secret, provider: "zai", userId };
-    }
-
-    const host = "https://bigmodel.cn";
-    const authorization = accessToken;
+    const bizToken = await this.resolveZaiBizToken(accessToken);
+    const host = "https://api.z.ai";
+    const authorization = `Bearer ${bizToken}`;
 
     const { orgId, projectId } = await this.resolveCustomerInfo(host, authorization);
     const { apiKey } = await this.findOrCreateApiKey(host, authorization, orgId, projectId);
+    // Bundle `dJr` runs with requireSecretKey=true for zai: a missing
+    // secretKey fails the login instead of storing a credential that can
+    // never sign (3.12.3: "API key copy response is missing secretKey.").
+    const secret = await this.getSecretKey(host, authorization, orgId, projectId, apiKey);
+    if (!secret) {
+      throw new Error("zai API key copy response is missing secretKey");
+    }
 
-    let fullKey = apiKey;
-    try {
-      const secret = await this.getSecretKey(host, authorization, orgId, projectId, apiKey);
-      if (secret) fullKey = `${apiKey}.${secret}`;
-    } catch { /* use apiKey only */ }
-
-    // 3.15.1 project-access-token plane: the raw OAuth token mints the signing
-    // JWT (`…/access_tokens`); without it signing falls back to the apiKey
-    // form and fails open on the bigmodel handshake.
-    return { apiKey: fullKey, provider: "bigmodel", userId, oauthAccessToken: accessToken };
+    return { apiKey, secret, provider: "zai", userId };
   }
 }

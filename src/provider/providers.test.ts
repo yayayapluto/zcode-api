@@ -14,16 +14,9 @@ describe("providers", () => {
     expect(p.bizHost).toBe("https://api.z.ai");
   });
 
-  it("getProvider returns Bigmodel definition", () => {
-    const p = getProvider("bigmodel");
-    expect(p.id).toBe("bigmodel");
-    expect(p.anthropicBaseURL).toBe("https://open.bigmodel.cn/api/anthropic");
-    expect(p.openaiBaseURL).toBe("https://open.bigmodel.cn/api/coding/paas/v4");
-    expect(p.bizHost).toBe("https://open.bigmodel.cn");
-  });
-
   it("getProvider throws on unknown id", () => {
     expect(() => getProvider("openai" as any)).toThrow(/Unknown provider/);
+    expect(() => getProvider("bigmodel" as any)).toThrow(/Unknown provider/);
   });
 });
 

@@ -8,12 +8,12 @@ auth:
   proxyApiKey: "your-proxy-secret"
 
   # Upstream credentials come from the OAuth login flow — run this first:
-  #   bun run src/index.ts auth login <zai|bigmodel>
+  #   bun run src/index.ts auth login
   # Parsed but currently not honored — the credential store path is fixed at
   # ~/.zcode-proxy/credentials.json:
   # oauthCredentialsPath: "~/.zcode-proxy/credentials.json"
 
-# Which upstream provider to use: "zai" or "bigmodel"
+# Upstream provider (fixed): "zai"
 provider: zai
 
 # Which plan tier to use:
@@ -33,9 +33,6 @@ providers:
   zai:
     anthropicBase: "https://api.z.ai/api/anthropic"
     openaiBase: "https://api.z.ai/api/coding/paas/v4"
-  bigmodel:
-    anthropicBase: "https://open.bigmodel.cn/api/anthropic"
-    openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4"
 
 # Default model used when a client request omits `model`.
 defaultModel: glm-5.3

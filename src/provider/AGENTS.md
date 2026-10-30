@@ -6,7 +6,7 @@
 | 文件 | 角色 |
 |---|---|
 | models.ts | 钉死目录 `MODELS`（11 型，spec 对齐 3.11.2 逆向 catalog）+ 广告子集 `ADVERTISED_MODELS` |
-| providers.ts | zai/bigmodel 端点定义（anthropic/openai base、bizHost） |
+| providers.ts | zai 端点定义（anthropic/openai base、bizHost） |
 | reasoning.ts | GLM-5.3 effort 契约：eligibility、budget 配对与钳制 |
 | types.ts | `ProviderId` / `ProviderDef` / `ModelDef` |
 

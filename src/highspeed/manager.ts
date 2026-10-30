@@ -515,6 +515,6 @@ export function highspeedAuthFrom(cred: Credential): HighspeedAuth | null {
   return {
     jwt: cred.jwt,
     codingPlanAuth: credentialString(cred),
-    family: cred.provider === "bigmodel" ? "bigmodel" : "zai",
+    family: "zai",
   };
 }

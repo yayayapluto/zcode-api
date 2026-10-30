@@ -6,9 +6,9 @@ import type { ProviderId } from "../provider/types.js";
 
 /** A resolved credential ready to be injected into upstream requests. */
 export interface Credential {
-  /** The API key portion (e.g. Z.AI API key id, or Bigmodel API key). */
+  /** The API key portion (Z.AI API key id). */
   apiKey: string;
-  /** The secret portion (required for Z.AI, optional for Bigmodel — appended as `{apiKey}.{secret}`). */
+  /** The secret portion (required — appended as `{apiKey}.{secret}`). */
   secret?: string;
   /** Which provider this credential is for. */
   provider: ProviderId;
@@ -19,7 +19,7 @@ export interface Credential {
   /** JWT token for start-plan (zcode.z.ai). Present when login captured the ZCode plan token. */
   jwt?: string;
   /**
-   * Raw provider OAuth access token (bigmodel). Required by the 3.15.1
+   * Raw provider OAuth access token. Required by the 3.15.1
    * project-access-token plane: getCustomerInfo (bare) and
    * `…/api_keys/{id}/access_tokens` (Bearer) mint the signing JWT
    * (`project_access`, 5h). Absent for API-key imports and pre-patch logins
@@ -32,7 +32,7 @@ export interface Credential {
  * Convert a `Credential` to the string sent upstream.
  *
  * - Z.AI: `{apiKey}.{secret}` (secret required)
- * - Bigmodel: `{apiKey}.{secret}` when a secret exists, otherwise `{apiKey}`
+ * - `{apiKey}.{secret}` when a secret exists, otherwise `{apiKey}`
  */
 export function credentialString(cred: Credential): string {
   if (cred.secret) {

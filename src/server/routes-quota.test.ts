@@ -23,7 +23,6 @@ function makeConfig(overrides: Partial<ProxyConfig> = {}): ProxyConfig {
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -233,8 +232,6 @@ describe("collectQuotaSnapshot response mapping", () => {
 });
 
 describe("collectQuotaSnapshot coding plane", () => {
-  const bigmodelCred: Credential = { apiKey: "bm-key-123", provider: "bigmodel", jwt: makeJwt() };
-  const loadBigmodel = async (): Promise<Credential> => bigmodelCred;
   const jwtLessCred: Credential = { apiKey: "key-x.secret-y", provider: "zai" };
   const loadJwtLess = async (): Promise<Credential> => jwtLessCred;
 
@@ -265,14 +262,6 @@ describe("collectQuotaSnapshot coding plane", () => {
     const snap = await collectQuotaSnapshot(makeConfig(), fetchImpl, loadFake);
     expect(snap.errors).toEqual([]);
     expect(snap.codingPlan).toEqual({ level: "pro", limits: [] });
-  });
-
-  it("bigmodel credential → open.bigmodel.cn monitor origin with the raw key", async () => {
-    const { fetchImpl, calls } = makeBillingFetch();
-    await collectQuotaSnapshot(makeConfig({ provider: "bigmodel" }), fetchImpl, loadBigmodel);
-    const monitor = planeCalls(calls, "monitor");
-    expect(monitor[0].url).toBe("https://open.bigmodel.cn/api/monitor/usage/quota/limit");
-    expect(monitor[0].headers["authorization"]).toBe("bm-key-123");
   });
 
   it("monitor endpoint failure degrades to codingPlan null + errors entry, credits data intact", async () => {

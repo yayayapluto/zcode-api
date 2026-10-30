@@ -11,14 +11,13 @@ import {
 } from "./server/control.js";
 import { collectQuotaSnapshot } from "./server/routes-quota.js";
 import { loadCredential, saveCredential, clearCredential, getStorePath } from "./auth/store.js";
-import { ZaiOAuthClient, BigmodelOAuthClient, BigmodelPollOAuthClient, LOGIN_TIMEOUT_MS, parsePastedCallbackUrl, type OAuthResult } from "./auth/oauth.js";
+import { ZaiOAuthClient, type OAuthResult } from "./auth/oauth.js";
 import { KeyResolver } from "./auth/resolver.js";
 import type { Credential } from "./auth/types.js";
 import type { ProviderId } from "./provider/types.js";
 import type { ProxyConfig } from "./config/types.js";
 import { updateConfigYaml, ensureConfigFile } from "./config/edit.js";
 import { openBrowser } from "./runtime/open-browser.js";
-import { pasteLoginInstructions, readPastedLine, boldIfTTY } from "./runtime/paste-login.js";
 import { buildServerOptions } from "./server/server-options.js";
 import {
   resolvePanelSettings,
@@ -83,6 +82,7 @@ function runCli(): void {
   // Default surface is the TUI. Bare invocation, the retired `tui` token
   // (kept as a silent alias), and tui-style args (`debug`, `*.yaml`) all land
   // here — the former `tui <args>` subcommand simply dropped its prefix.
+  // First run ever: do the Z.AI login inline, then drop straight into the TUI.
   if (
     args.length === 0 ||
     args[0] === "tui" ||
@@ -90,7 +90,7 @@ function runCli(): void {
     args[0].endsWith(".yaml") ||
     args[0].endsWith(".yml")
   ) {
-    launchTui(parseServeArgs(args[0] === "tui" ? args.slice(1) : args));
+    void ensureLoginThenTui(args[0] === "tui" ? args.slice(1) : args);
     return;
   }
   dispatchCli(args);
@@ -137,6 +137,25 @@ function launchTui(args: ServeArgs): void {
     });
 }
 
+/**
+ * One-command run: if no credential is stored yet, run the Z.AI OAuth login
+ * first, then open the TUI. Clone → bun install → bun run start just works.
+ */
+async function ensureLoginThenTui(rawArgs: string[]): Promise<void> {
+  const cred = await loadCredential().catch(() => null);
+  if (!cred) {
+    console.log("First run: Z.AI login required (one time only).\n");
+    try {
+      await performZaiLogin(false);
+    } catch (err) {
+      console.error(`login failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+    console.log("");
+  }
+  launchTui(parseServeArgs(rawArgs));
+}
+
 function printHelp(): void {
   console.log(`zcode-proxy ${VERSION}
 
@@ -148,8 +167,8 @@ Usage:
   zcode-proxy serve debug [config.yaml]
                                     Start with verbose per-request diagnostics
   zcode-proxy --cli                 Classic CLI mode (bare --cli = serve)
-  zcode-proxy auth login <provider> Login via OAuth (provider: zai | bigmodel)
-  zcode-proxy auth login <provider> --import
+  zcode-proxy auth login            Login via Z.AI OAuth (one time only)
+  zcode-proxy auth login --import
                                     Import API key from ~/.zcode/v2/config.json
   zcode-proxy auth logout           Clear stored credentials
   zcode-proxy auth status           Show current authentication state
@@ -162,8 +181,8 @@ Examples:
   zcode-proxy                       Terminal UI: login, start/stop, live logs
   zcode-proxy debug                 Terminal UI with per-request diagnostics
   zcode-proxy serve debug           CLI: start with extra debug logging
-  zcode-proxy auth login bigmodel   OAuth login for Bigmodel
-  zcode-proxy auth login bigmodel --import
+  zcode-proxy auth login            OAuth login for Z.AI
+  zcode-proxy auth login --import
                                     Import existing key from ZCode config
   zcode-proxy auth status           Check if logged in
 `);
@@ -365,7 +384,7 @@ async function serve(configPath: string | undefined, debug: boolean): Promise<vo
   if (ensureConfigFile(path)) {
     ensureDeviceMidInConfig(path);
     console.log(`Created ${path} from bundled template.`);
-    console.log(`Run: zcode-proxy auth login <zai|bigmodel>\n`);
+    console.log(`Run: zcode-proxy auth login\n`);
   }
   const config = loadConfig(path);
 
@@ -630,36 +649,28 @@ function fmtQuotaExpiry(expiresAt: number): string {
 }
 
 async function authLogin(args: string[]): Promise<void> {
-  const provider = args[0] as ProviderId | undefined;
   const importMode = args.includes("--import");
-  // Headless paste login: --paste flag or ZCODE_OAUTH_PASTE=1 (docker-friendly).
-  const pasteMode =
-    args.includes("--paste") || /^(1|true|yes)$/i.test(process.env.ZCODE_OAUTH_PASTE ?? "");
-
-  if (!provider || (provider !== "zai" && provider !== "bigmodel")) {
-    console.error("Usage: zcode-proxy auth login <zai|bigmodel> [--import] [--paste]");
-    process.exit(1);
-  }
-  if (pasteMode && provider !== "bigmodel") {
-    console.error("--paste applies to the bigmodel auth-code flow only.");
-    console.error("zai login is server-mediated (no localhost callback) and already works headless.");
-    process.exit(1);
-  }
 
   ensureConfigWithDeviceMid();
 
-  const mode = importMode ? "(import)" : pasteMode ? "(OAuth, paste)" : "(OAuth)";
+  await performZaiLogin(importMode);
+}
+
+/** Z.AI login: OAuth (default) or `--import` from the ZCode desktop config. */
+async function performZaiLogin(importMode: boolean): Promise<void> {
+  const provider = "zai" as const;
+  const mode = importMode ? "(import)" : "(OAuth)";
   console.log(`Logging in: ${provider} ${mode}\n`);
 
   let cred: Credential;
 
   if (importMode) {
-    cred = importFromZCodeConfig(provider);
+    cred = importFromZCodeConfig();
   } else {
-    const { accessToken, userId, jwt } = await runOAuth(provider, pasteMode);
+    const { accessToken, userId, jwt } = await runZaiOAuth();
     console.log("\nResolving API key...");
     const resolver = new KeyResolver();
-    cred = await resolver.resolveCodingPlanCredential(accessToken, provider, userId);
+    cred = await resolver.resolveCodingPlanCredential(accessToken, userId);
     if (jwt) cred.jwt = jwt;
   }
 
@@ -732,7 +743,7 @@ async function authStatus(): Promise<void> {
   const cred = await loadCredential();
   if (!cred) {
     console.log("Not logged in.");
-    console.log("Run: zcode-proxy auth login <zai|bigmodel>");
+    console.log("Run: zcode-proxy auth login");
     return;
   }
   console.log(`Logged in: ${cred.provider}`);
@@ -740,16 +751,11 @@ async function authStatus(): Promise<void> {
   console.log(`  Store:   ${getStorePath()}`);
 }
 
-async function runOAuth(provider: ProviderId, pasteMode: boolean): Promise<OAuthResult> {
-  if (provider === "bigmodel" && pasteMode) {
-    const oauth = new BigmodelOAuthClient();
-    return runPasteLogin(oauth);
-  }
-
-  // Both providers use the server-mediated poll login (ZCode 3.12.3 default):
+async function runZaiOAuth(): Promise<OAuthResult> {
+  // Server-mediated poll login (ZCode 3.12.3 default):
   // the browser never calls back here — open the URL on ANY device and the
   // flow completes server-side while we poll.
-  const oauth = provider === "bigmodel" ? new BigmodelPollOAuthClient() : new ZaiOAuthClient();
+  const oauth = new ZaiOAuthClient();
   const result = await oauth.authorize((url) => {
     console.log("Open this URL to authorize (any device/browser works):\n");
     console.log(`  ${url}\n`);
@@ -763,32 +769,8 @@ async function runOAuth(provider: ProviderId, pasteMode: boolean): Promise<OAuth
   return result;
 }
 
-/**
- * Headless bigmodel login (`auth login bigmodel --paste`): the localhost
- * callback server is still bound — it defines the redirect port and the
- * browser can never reach it from inside a container anyway — but instead of
- * waiting on it, the user pastes the redirected URL back. The exact
- * `started.callbackUrl` string is used BOTH as the authorize `redirect` param
- * and as the exchange `redirect_uri` (the token endpoint requires them to
- * match), so the pair stays consistent by construction.
- */
-async function runPasteLogin(oauth: BigmodelOAuthClient): Promise<OAuthResult> {
-  const started = await oauth.start();
-  try {
-    console.log(pasteLoginInstructions(started.authorizeUrl, started.callbackUrl, LOGIN_TIMEOUT_MS));
-    openBrowser(started.authorizeUrl);
-    process.stdout.write("\n" + boldIfTTY("Paste the FULL redirected URL here, then press Enter:") + "\n> ");
-    const pasted = await readPastedLine(LOGIN_TIMEOUT_MS);
-    const code = parsePastedCallbackUrl(pasted, started.state);
-    console.log("\nExchanging authorization code...");
-    const tokens = await oauth.exchangeCode(code, started.callbackUrl, started.state);
-    return { accessToken: tokens.accessToken, provider: "bigmodel", userId: tokens.userId, jwt: tokens.jwt };
-  } finally {
-    await oauth.close();
-  }
-}
-
-function importFromZCodeConfig(provider: ProviderId): Credential {
+function importFromZCodeConfig(): Credential {
+  const provider = "zai" as const;
   const configPath = join(homedir(), ".zcode", "v2", "config.json");
   let raw: string;
   try {

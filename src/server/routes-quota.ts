@@ -106,12 +106,12 @@ async function fetchBilling(
   }
 }
 
-/** Mirror of the bundle's `$_` (isSuccessfulBigModelEnvelope): `success !== false` and code absent/0/200. */
+/** Mirror of the bundle's envelope check: `success !== false` and code absent/0/200. */
 function isSuccessfulEnvelope(e: { code?: number; success?: unknown }): boolean {
   return e.success !== false && (e.code === undefined || e.code === 0 || e.code === 200);
 }
 
-/** Coding origin per stored credential's provider — `https://api.z.ai` / `https://open.bigmodel.cn`. */
+/** Coding origin from the configured provider endpoints. */
 function codingOrigin(config: ProxyConfig, provider: Credential["provider"]): string | null {
   try {
     return new URL(config.providers[provider].openaiBase).origin;

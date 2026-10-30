@@ -2,8 +2,8 @@
  * Provider and model type definitions.
  */
 
-/** Supported provider identifiers. */
-export type ProviderId = "zai" | "bigmodel";
+/** Supported provider identifiers. Single-provider build: Z.AI only. */
+export type ProviderId = "zai";
 
 /** Static provider definition with endpoint URLs. */
 export interface ProviderDef {

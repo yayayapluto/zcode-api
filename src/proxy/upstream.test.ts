@@ -8,7 +8,7 @@ import { buildUpstreamRequest, buildUpstreamHeaderPairs, buildUpstreamURL, build
 import { sendOrderedUpstreamRequest } from "./ordered-transport.js";
 import { buildZcodeTraceHeaders } from "./trace-headers.js";
 import { proxyRequest, errorResponse, shouldUseOrderedTransport, stripAutoDecodedEncoding } from "./handler.js";
-import { ZAI_PROVIDER, BIGMODEL_PROVIDER } from "../provider/providers.js";
+import { ZAI_PROVIDER } from "../provider/providers.js";
 import type { Credential } from "../auth/types.js";
 import type { ProxyConfig, ProxyIdentity } from "../config/types.js";
 import { AuthManager } from "../auth/manager.js";
@@ -22,7 +22,6 @@ function oauthAuth(key = "testkey.testsecret"): AuthManager {
 }
 
 const ZAI_CRED: Credential = { apiKey: "testkey", secret: "testsecret", provider: "zai" };
-const BIGMODEL_CRED: Credential = { apiKey: "bmkey", provider: "bigmodel" };
 
 const IDENTITY: ProxyIdentity = {
   appVersion: "test-1.0.0",
@@ -81,17 +80,6 @@ describe("buildUpstreamURL", () => {
     );
   });
 
-  it("builds Anthropic URL for Bigmodel", () => {
-    expect(buildUpstreamURL("anthropic", BIGMODEL_PROVIDER)).toBe(
-      "https://open.bigmodel.cn/api/anthropic/v1/messages",
-    );
-  });
-
-  it("builds OpenAI URL for Bigmodel", () => {
-    expect(buildUpstreamURL("openai", BIGMODEL_PROVIDER)).toBe(
-      "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
-    );
-  });
 });
 
 describe("buildZcodeTraceHeaders", () => {
@@ -164,14 +152,14 @@ describe("buildAuthHeaders", () => {
     expect(h["User-Agent"]).toBe("ZCode/test-1.0.0 ai-sdk/anthropic/3.0.81");
   });
 
-  it("uses apiKey only (no secret) for Bigmodel Anthropic", () => {
-    const h = buildAuthHeaders("anthropic", BIGMODEL_CRED, IDENTITY);
+  it("uses apiKey only (no secret) for zai Anthropic", () => {
+    const h = buildAuthHeaders("anthropic", { apiKey: "bmkey", provider: "zai" }, IDENTITY);
     expect(h["x-api-key"]).toBe("bmkey");
     expect(h["anthropic-version"]).toBe("2023-06-01");
   });
 
-  it("uses apiKey only for Bigmodel OpenAI", () => {
-    const h = buildAuthHeaders("openai", BIGMODEL_CRED, IDENTITY);
+  it("uses apiKey only for zai OpenAI", () => {
+    const h = buildAuthHeaders("openai", { apiKey: "bmkey", provider: "zai" }, IDENTITY);
     expect(h["authorization"]).toBe("Bearer bmkey");
   });
 
@@ -386,10 +374,10 @@ describe("buildUpstreamRequest", () => {
 
   it("constructs full OpenAI request with correct URL + headers", async () => {
     const clientReq = makeClientReq('{"model":"glm-4.6","messages":[]}');
-    const upstream = buildUpstreamRequest(clientReq, "openai", BIGMODEL_PROVIDER, BIGMODEL_CRED, '{"model":"glm-4.6","messages":[]}', IDENTITY);
+    const upstream = buildUpstreamRequest(clientReq, "openai", ZAI_PROVIDER, ZAI_CRED, '{"model":"glm-4.6","messages":[]}', IDENTITY);
 
-    expect(upstream.url).toBe("https://open.bigmodel.cn/api/coding/paas/v4/chat/completions");
-    expect(upstream.headers.get("authorization")).toBe("Bearer bmkey");
+    expect(upstream.url).toBe("https://api.z.ai/api/coding/paas/v4/chat/completions");
+    expect(upstream.headers.get("authorization")).toBe("Bearer testkey.testsecret");
     expect(upstream.headers.get("content-type")).toBe("application/json");
   });
 
@@ -427,7 +415,6 @@ describe("proxyRequest", () => {
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -636,7 +623,6 @@ describe("proxyRequest — OpenAI translation mode (coding-plan → Anthropic up
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -902,7 +888,6 @@ describe("client gzip handling", () => {
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -1035,7 +1020,6 @@ describe("proxyRequest — Anthropic compatibility mode (coding-plan)", () => {
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -1382,7 +1366,6 @@ describe("proxyRequest — tool-call roundtrip (OpenAI client → Anthropic upst
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],
@@ -1547,7 +1530,6 @@ describe("proxyRequest — thinking endpoint matrix", () => {
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],

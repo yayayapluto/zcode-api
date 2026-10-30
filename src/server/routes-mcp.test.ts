@@ -19,7 +19,6 @@ function makeConfig(overrides: Partial<ProxyConfig> = {}, mcpGateway: McpGateway
     plan: "coding-plan",
     providers: {
       zai: { anthropicBase: "https://api.z.ai/api/anthropic", openaiBase: "https://api.z.ai/api/coding/paas/v4" },
-      bigmodel: { anthropicBase: "https://open.bigmodel.cn/api/anthropic", openaiBase: "https://open.bigmodel.cn/api/coding/paas/v4" },
     },
     defaultModel: "glm-4.6",
     models: ["glm-4.6"],

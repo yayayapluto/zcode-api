@@ -147,11 +147,8 @@
       <section>
         <h2>Config</h2>
         <div class="row">
-          <label for="cfg-provider" class="muted">Provider</label>
-          <select id="cfg-provider">
-            <option value="zai">zai</option>
-            <option value="bigmodel">bigmodel</option>
-          </select>
+          <label class="muted">Provider</label>
+          <span class="muted">zai (fixed)</span>
           <label for="cfg-plan" class="muted">Plan</label>
           <select id="cfg-plan">
             <option value="coding-plan">coding-plan</option>
@@ -167,7 +164,6 @@
         <h2>Account</h2>
         <div class="row">
           <button id="login">Login (zai)</button>
-          <button id="login-bm">Login (bigmodel)</button>
           <button id="logout">Logout</button>
         </div>
         <div id="login-body" class="row muted"></div>
@@ -254,7 +250,6 @@
         $("s-port").textContent = r.proxyPort ? "listening on " + r.proxyPort : "stopped";
         $("s-login").textContent = r.loggedIn ? "yes" : "no — use Login below";
         $("s-login").className = r.loggedIn ? "" : "danger";
-        $("cfg-provider").value = r.provider;
         $("cfg-plan").value = r.plan;
         $("start").disabled = !!r.proxyPort;
         $("stop").disabled = !r.proxyPort;
@@ -346,10 +341,10 @@
         if (stick) box.scrollTop = box.scrollHeight;
       }
 
-      async function startLogin(provider) {
+      async function startLogin() {
         if (!token) return;
         $("login-body").innerHTML = '<span class="muted">requesting authorize URL…</span>';
-        const r = await cmd({ cmd: "startOAuth", provider });
+        const r = await cmd({ cmd: "startOAuth" });
         if (!r.ok) {
           $("login-body").innerHTML = '<span class="danger">' + esc(r.error) + "</span>";
           return;
@@ -387,9 +382,8 @@
       $("start").onclick = () => guard("start", { cmd: "startProxy" });
       $("stop").onclick = () => guard("stop", { cmd: "stopProxy" });
       $("apply").onclick = () =>
-        guard("apply", { cmd: "setConfig", provider: $("cfg-provider").value, plan: $("cfg-plan").value });
-      $("login").onclick = () => startLogin("zai");
-      $("login-bm").onclick = () => startLogin("bigmodel");
+        guard("apply", { cmd: "setConfig", provider: "zai", plan: $("cfg-plan").value });
+      $("login").onclick = () => startLogin();
       $("logout").onclick = () => {
         if (
           confirm("Log out and delete the stored credential? The proxy stops using it immediately and is stopped if it is running.")
